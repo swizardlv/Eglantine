@@ -499,6 +499,10 @@ jobs:
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK_URL secret not configured, skipping Discord ping."
+            exit 0
+          fi
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/build-${GITHUB_RUN_NUMBER}"
           MSG=$(printf '## <@&1566184315178713190> Eglantine %s build %s (%s)\n%s' \
             "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" "${GITHUB_SHA::7}" "$URL")
