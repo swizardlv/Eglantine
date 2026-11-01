@@ -99,12 +99,17 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     Kernel::CodeSet codeset;
     codeset.memory.resize(module_start + last_segment_it->location + last_segment_it->size);
     {
-        std::vector<u8> compressed_data(*std::ranges::max_element(nso_header.segments_compressed_size));
-        std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
+        const size_t max_uncompressed_segment = std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
             return a.size < b.size;
-        })->size);
+        })->size;
+        const size_t max_compressed_segment = *std::ranges::max_element(nso_header.segments_compressed_size);
+        std::vector<u8> compressed_data(std::max(max_compressed_segment, max_uncompressed_segment));
+        std::vector<u8> decompressed_size(max_uncompressed_segment);
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
-            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
+            const size_t read_size = nso_header.IsSegmentCompressed(i)
+                                         ? static_cast<size_t>(nso_header.segments_compressed_size[i])
+                                         : static_cast<size_t>(nso_header.segments[i].size);
+            nso_file.Read(compressed_data.data(), read_size, nso_header.segments[i].offset);
             if (nso_header.IsSegmentCompressed(i)) {
                 if (nso_header.IsZBICCompressed()) {
                     // ZBIC compression
@@ -174,6 +179,24 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         pi_header = pm->PatchNSO(pi_header, name);
 
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
+    }
+
+    // Switch 2 / SDK 22.2.0+ workaround (e.g. Donkey Kong Bananza / SilverStar):
+    // If TlsHeapCentral::Init at sdk + 0x1356D0 contains 0x00000000 (abort trap),
+    // patch it to ret (0xD65F03C0) to allow CentralHeap::Init to proceed.
+    if (name == "sdk" && codeset.memory.size() >= module_start + 0x1356D0 + sizeof(u32)) {
+        u32 insn = 0;
+        std::memcpy(&insn, codeset.memory.data() + module_start + 0x1356D0, sizeof(insn));
+        u32 prev_insn = 0;
+        if (0x1356D0 >= 4) {
+            std::memcpy(&prev_insn, codeset.memory.data() + module_start + 0x1356D0 - 4, sizeof(prev_insn));
+        }
+        LOG_INFO(Loader, "sdk offset 0x1356D0 insn: 0x{:08X}, prev: 0x{:08X}", insn, prev_insn);
+        if (insn == 0) {
+            constexpr u32 ret_insn = 0xD65F03C0;
+            std::memcpy(codeset.memory.data() + module_start + 0x1356D0, &ret_insn, sizeof(ret_insn));
+            LOG_INFO(Loader, "Applied TlsHeapCentral::Init bypass patch (ret) at sdk+0x1356D0");
+        }
     }
 
 #ifdef HAS_NCE
