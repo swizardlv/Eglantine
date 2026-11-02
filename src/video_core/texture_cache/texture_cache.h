@@ -217,6 +217,10 @@ void TextureCache<P>::TickFrame() {
             const u64 device_local = runtime.GetDeviceLocalMemory();
             critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
             expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
+            if (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Conservative) {
+                expected_memory = (std::min)(expected_memory, 1280_MiB);
+                critical_memory = (std::min)(critical_memory, 1600_MiB);
+            }
             ApplyThresholdOverrides();
             native_critical_memory = critical_memory;
             native_expected_memory = expected_memory;
@@ -237,6 +241,10 @@ void TextureCache<P>::TickFrame() {
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     critical_memory = budget - margin;
                     expected_memory = budget - 2 * margin;
+                    if (Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Conservative) {
+                        expected_memory = (std::min)(expected_memory, 1280_MiB);
+                        critical_memory = (std::min)(critical_memory, 1600_MiB);
+                    }
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
