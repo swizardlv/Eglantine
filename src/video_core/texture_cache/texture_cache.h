@@ -1312,6 +1312,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         TrackImage(image, image_id);
     }
 
+    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
+        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
+                    (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
+        runtime.TransitionImageLayout(image);
+        return;
+    }
+
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
         RefreshSparseLayers(image);
         return;
@@ -1330,12 +1337,6 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 
     if (image.info.num_samples > 1 && !runtime.CanUploadMSAA()) {
         LOG_WARNING(HW_GPU, "MSAA image uploads are not implemented");
-        runtime.TransitionImageLayout(image);
-        return;
-    }
-    if (image.guest_size_bytes > 64_MiB) {
-        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
-                    image.guest_size_bytes >> 20, image.gpu_addr);
         runtime.TransitionImageLayout(image);
         return;
     }
@@ -1490,6 +1491,13 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             ImageInfo layer_info = image.info;
             layer_info.resources.layers = 1;
             const size_t layer_size = CalculateUnswizzledSizeBytes(layer_info);
+            const size_t max_layers = layer_size > 0 ? (std::max<size_t>)(1, 16_MiB / layer_size) : 1;
+            if (layers.size() > max_layers) {
+                for (size_t first = 0; first < layers.size(); first += max_layers) {
+                    UploadLayers(image, layers.subspan(first, (std::min<size_t>)(max_layers, layers.size() - first)));
+                }
+                return;
+            }
             auto staging = runtime.UploadStagingBuffer(layer_size * layers.size());
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
@@ -1521,6 +1529,13 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
         auto uploads = FullUploadSwizzles(image.info);
         const size_t level_offset = uploads[image.host_level_offset].buffer_offset;
         const size_t tail = image.info.layer_stride - level_offset;
+        const size_t max_layers = tail > 0 ? (std::max<size_t>)(1, 16_MiB / tail) : 1;
+        if (layers.size() > max_layers) {
+            for (size_t first = 0; first < layers.size(); first += max_layers) {
+                UploadLayers(image, layers.subspan(first, (std::min<size_t>)(max_layers, layers.size() - first)));
+            }
+            return;
+        }
         auto staging = runtime.UploadStagingBuffer(tail * layers.size());
         for (size_t i = 0; i < layers.size(); ++i) {
             gpu_memory->ReadBlock(image.gpu_addr + u64{layers[i]} * image.info.layer_stride +
@@ -1792,7 +1807,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(*gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data, local_unswizzle_data_buffer);
     const size_t out_size = MapSizeBytes(image);
-    if (False(image.flags & ImageFlagBits::ZeroFilled)) {
+    if (False(image.flags & ImageFlagBits::ZeroFilled) && out_size <= 32_MiB) {
         // Until the decode lands (a second or more while title 1 streams ~40 textures a second)
         // a new image showed whatever its memory last held, often other textures. Zero blocks
         // read as opaque black (BC1) or transparent (BC3) instead.
