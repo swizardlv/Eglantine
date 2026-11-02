@@ -1700,6 +1700,9 @@ private:
             std::scoped_lock lk{m_mutex};
             m_inputs.push_back(std::move(input));
             m_ready->room.store(m_inputs.size() < MaxQueuedInputs, std::memory_order_relaxed);
+            if (!m_worker.joinable()) {
+                m_worker = std::thread{[this] { DecodeLoop(); }};
+            }
         }
         m_cv.notify_one();
         const u64 id = ++m_submitted;
@@ -1870,12 +1873,30 @@ private:
         decoder->Render(*frame.picture, layout.format, width, height, layout.pitch,
                         layout.chroma_offset, bytes);
         DumpFrame(bytes, layout, width, height);
-        auto& memory = system.ApplicationMemory();
-        memory.WriteBlock(address, bytes.data(), layout.pitch * height);
+
+        auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+        const auto cpu_addr_opt = registry.CpuAddressOf(address);
+        const auto gpu_addr_opt = registry.DeviceAddressOf(address);
+
+        const u64 cpu_addr = cpu_addr_opt.value_or(address);
+        const u64 gpu_addr = gpu_addr_opt.value_or(address);
+
+        auto& app_memory = system.ApplicationMemory();
+        app_memory.WriteBlock(cpu_addr, bytes.data(), layout.pitch * height);
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
-            memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
-                              layout.pitch * ((height + 1) / 2));
+            app_memory.WriteBlock(cpu_addr + layout.chroma_offset,
+                                  bytes.data() + layout.chroma_offset,
+                                  layout.pitch * ((height + 1) / 2));
         }
+
+        auto& gpu_mem = system.Host1x().MemoryManager();
+        gpu_mem.WriteBlock(gpu_addr, bytes.data(), layout.pitch * height);
+        if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
+            gpu_mem.WriteBlock(gpu_addr + layout.chroma_offset,
+                               bytes.data() + layout.chroma_offset,
+                               layout.pitch * ((height + 1) / 2));
+        }
+
         return {width, height};
     }
 

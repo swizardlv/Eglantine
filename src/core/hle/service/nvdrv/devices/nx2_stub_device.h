@@ -161,18 +161,35 @@ public:
         device_ranges[cpu_address] = {size, device_address};
     }
 
+    std::optional<u64> CpuAddressOf(u64 gpu_address) {
+        std::scoped_lock lk{mutex};
+        for (const auto& m : mappings) {
+            if (gpu_address >= m.gpu_address && gpu_address < m.gpu_address + m.size) {
+                return m.cpu_address + (gpu_address - m.gpu_address);
+            }
+        }
+        return std::nullopt;
+    }
+
     std::optional<u64> DeviceAddressOf(u64 cpu_address) {
-        std::scoped_lock lk{device_mutex};
-        auto it = device_ranges.upper_bound(cpu_address);
-        if (it == device_ranges.begin()) {
-            return std::nullopt;
+        {
+            std::scoped_lock lk{device_mutex};
+            auto it = device_ranges.upper_bound(cpu_address);
+            if (it != device_ranges.begin()) {
+                --it;
+                const auto& [start, range] = *it;
+                if (cpu_address - start < range.first) {
+                    return range.second + (cpu_address - start);
+                }
+            }
         }
-        --it;
-        const auto& [start, range] = *it;
-        if (cpu_address - start >= range.first) {
-            return std::nullopt;
+        std::scoped_lock lk{mutex};
+        for (const auto& m : mappings) {
+            if (cpu_address >= m.cpu_address && cpu_address < m.cpu_address + m.size) {
+                return m.gpu_address + (cpu_address - m.cpu_address);
+            }
         }
-        return range.second + (cpu_address - start);
+        return std::nullopt;
     }
 
 private:
