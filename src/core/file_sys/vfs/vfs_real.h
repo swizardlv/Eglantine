@@ -120,6 +120,7 @@ public:
     VirtualFile GetFileRelative(std::string_view relative_path) const override;
     VirtualDir GetDirectoryRelative(std::string_view relative_path) const override;
     VirtualFile GetFile(std::string_view name) const override;
+    VirtualFile GetFileWithKnownSize(std::string_view name, u64 size) const override;
     VirtualDir GetSubdirectory(std::string_view name) const override;
     VirtualFile CreateFileRelative(std::string_view relative_path) override;
     VirtualDir CreateDirectoryRelative(std::string_view relative_path) override;

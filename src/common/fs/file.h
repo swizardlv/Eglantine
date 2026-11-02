@@ -10,6 +10,9 @@
 #include <filesystem>
 #include <span>
 #include <type_traits>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include "common/concepts.h"
 #include "common/fs/fs_types.h"
@@ -285,7 +288,25 @@ public:
         if (!IsOpen()) {
             return 0;
         }
-        return std::fread(data.data(), sizeof(T), data.size(), file);
+        if (file) {
+            return std::fread(data.data(), sizeof(T), data.size(), file);
+        }
+#ifndef _WIN32
+        if (fd >= 0) {
+            const size_t bytes_to_read = data.size_bytes();
+            size_t bytes_read = 0;
+            auto* ptr = reinterpret_cast<char*>(data.data());
+            while (bytes_read < bytes_to_read) {
+                const auto res = ::read(fd, ptr + bytes_read, bytes_to_read - bytes_read);
+                if (res <= 0) {
+                    break;
+                }
+                bytes_read += static_cast<size_t>(res);
+            }
+            return bytes_read / sizeof(T);
+        }
+#endif
+        return 0;
     }
 
     /**
@@ -310,8 +331,25 @@ public:
         if (!IsOpen()) {
             return 0;
         }
-
-        return std::fwrite(data.data(), sizeof(T), data.size(), file);
+        if (file) {
+            return std::fwrite(data.data(), sizeof(T), data.size(), file);
+        }
+#ifndef _WIN32
+        if (fd >= 0) {
+            const size_t bytes_to_write = data.size_bytes();
+            size_t bytes_written = 0;
+            const auto* ptr = reinterpret_cast<const char*>(data.data());
+            while (bytes_written < bytes_to_write) {
+                const auto res = ::write(fd, ptr + bytes_written, bytes_to_write - bytes_written);
+                if (res <= 0) {
+                    break;
+                }
+                bytes_written += static_cast<size_t>(res);
+            }
+            return bytes_written / sizeof(T);
+        }
+#endif
+        return 0;
     }
 
     /**
@@ -335,11 +373,7 @@ public:
         static_assert(std::is_trivially_copyable_v<T>, "Data type must be trivially copyable.");
         static_assert(!std::is_pointer_v<T>, "T must not be a pointer to an object.");
 
-        if (!IsOpen()) {
-            return false;
-        }
-
-        return std::fread(&object, sizeof(T), 1, file) == 1;
+        return ReadSpan(std::span<T>{&object, 1}) == 1;
     }
 
     /**
@@ -362,11 +396,7 @@ public:
         static_assert(std::is_trivially_copyable_v<T>, "Data type must be trivially copyable.");
         static_assert(!std::is_pointer_v<T>, "T must not be a pointer to an object.");
 
-        if (!IsOpen()) {
-            return false;
-        }
-
-        return std::fwrite(&object, sizeof(T), 1, file) == 1;
+        return WriteSpan(std::span<const T>{&object, 1}) == 1;
     }
 
     /**
@@ -455,6 +485,7 @@ private:
     FileType file_type{};
 
     std::FILE* file = nullptr;
+    mutable int fd = -1;
 };
 
 } // namespace Common::FS

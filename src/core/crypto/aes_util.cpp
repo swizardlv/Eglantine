@@ -93,9 +93,29 @@ Crypto::AESCipher<Key>::AESCipher(Key key, Mode mode) : ctx(std::make_unique<Cip
     }
 
     ASSERT(ctx->encryption_context && ctx->decryption_context && ctx->cipher && "OpenSSL cipher context failed init!");
-    // now init ciphers
-    ASSERT(EVP_CipherInit_ex2(ctx->encryption_context, ctx->cipher, key.data(), NULL, 1, NULL));
-    ASSERT(EVP_CipherInit_ex2(ctx->decryption_context, ctx->cipher, key.data(), NULL, 0, NULL));
+    // In OpenSSL 3+, ciphers with IV (such as CTR and XTS) require a non-null IV buffer
+    // during key initialization. Use a zeroed IV buffer; SetIV() will update it before use.
+    static constexpr std::array<u8, 16> zero_iv{};
+    const u8* iv_ptr = (mode == Mode::ECB) ? nullptr : zero_iv.data();
+
+    // In XTS mode, OpenSSL 3 strictly forbids key1 == key2 (e.g. all-zero dummy/missing key).
+    // If key1 == key2 in XTS, perturb dummy key2 so OpenSSL initializes without aborting.
+    Key actual_key = key;
+    if (mode == Mode::XTS && sizeof(Key) >= 32) {
+        if (std::memcmp(actual_key.data(), actual_key.data() + sizeof(Key) / 2, sizeof(Key) / 2) == 0) {
+            actual_key.data()[sizeof(Key) - 1] ^= 0xFF;
+        }
+    }
+
+    const int enc_ok = EVP_CipherInit_ex2(ctx->encryption_context, ctx->cipher, actual_key.data(), iv_ptr, 1, NULL);
+    const int dec_ok = EVP_CipherInit_ex2(ctx->decryption_context, ctx->cipher, actual_key.data(), iv_ptr, 0, NULL);
+    if (!enc_ok || !dec_ok) {
+        char err_buf[256];
+        ERR_error_string_n(ERR_get_error(), err_buf, sizeof(err_buf));
+        LOG_CRITICAL(Crypto, "EVP_CipherInit_ex2 failed: mode={} key_size={} err={}",
+                     static_cast<int>(mode), sizeof(Key), err_buf);
+    }
+    ASSERT(enc_ok && dec_ok);
 
     EVP_CIPHER_CTX_set_padding(ctx->encryption_context, 0);
     EVP_CIPHER_CTX_set_padding(ctx->decryption_context, 0);

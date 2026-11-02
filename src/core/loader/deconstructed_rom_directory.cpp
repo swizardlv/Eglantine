@@ -83,17 +83,48 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     if (exefs_dir == nullptr) {
         return nullptr;
     }
+    static std::mutex s_romfs_cache_mutex;
+    static std::map<std::string, FileSys::VirtualFile> s_romfs_cache;
+    const std::string dir_path = exefs_dir->GetFullPath();
+    {
+        std::lock_guard lock(s_romfs_cache_mutex);
+        if (auto it = s_romfs_cache.find(dir_path); it != s_romfs_cache.end()) {
+            return it->second;
+        }
+    }
     for (const auto& f : exefs_dir->GetFiles()) {
         if (f->GetExtension() == "romfs") {
+            std::fprintf(stderr, "[EglantinePS5] RomFS: Found .romfs file in exefs: %s\n", f->GetName().c_str());
+            std::fflush(stderr);
+            std::lock_guard lock(s_romfs_cache_mutex);
+            s_romfs_cache[dir_path] = f;
             return f;
         }
     }
     if (const auto parent = exefs_dir->GetParentDirectory()) {
+        for (const auto& f : parent->GetFiles()) {
+            if (f->GetExtension() == "romfs") {
+                std::fprintf(stderr, "[EglantinePS5] RomFS: Found .romfs file in parent: %s\n", f->GetName().c_str());
+                std::fflush(stderr);
+                std::lock_guard lock(s_romfs_cache_mutex);
+                s_romfs_cache[dir_path] = f;
+                return f;
+            }
+        }
         if (const auto romfs_dir = parent->GetSubdirectory("romfs")) {
             LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-            return FileSys::CreateRomFS(romfs_dir);
+            std::fprintf(stderr, "[EglantinePS5] RomFS: Found directory 'romfs', building virtual RomFS image...\n");
+            std::fflush(stderr);
+            auto res = FileSys::CreateRomFS(romfs_dir);
+            std::fprintf(stderr, "[EglantinePS5] RomFS: Image creation %s\n", res ? "SUCCESS" : "FAILED");
+            std::fflush(stderr);
+            std::lock_guard lock(s_romfs_cache_mutex);
+            s_romfs_cache[dir_path] = res;
+            return res;
         }
     }
+    std::fprintf(stderr, "[EglantinePS5] RomFS: None found next to ExeFS\n");
+    std::fflush(stderr);
     return nullptr;
 }
 
@@ -232,11 +263,6 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         control.emplace(nacp_file);
         name = control->GetApplicationName();
     }
-
-    romfs = FindLooseRomFS(file_dir);
-    if (const auto title_dir = file_dir->GetParentDirectory()) {
-        romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
-    }
 }
 
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
@@ -245,7 +271,6 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(
     , dir(std::move(directory))
     , override_update(override_update_)
 {
-    romfs = FindLooseRomFS(dir);
 }
 
 FileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile& dir_file) {
@@ -304,6 +329,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
     // Loose-ExeFS loads bypass the NCA/NSP loaders, which are the ones that normally apply
     // LayeredFS to the RomFS; apply it here so mods in user/load/<titleid>/ work too.
+    if (romfs == nullptr) {
+        romfs = FindLooseRomFS(dir);
+    }
     if (romfs != nullptr) {
         const FileSys::PatchManager patch_manager(metadata.GetTitleID(),
                                                   system.GetFileSystemController(),
@@ -415,6 +443,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
 ResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::VirtualFile& out_dir) {
     if (romfs == nullptr) {
+        romfs = FindLooseRomFS(dir ? dir : (file ? file->GetContainingDirectory() : nullptr));
+    }
+    if (romfs == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }
 
@@ -457,6 +488,14 @@ ResultStatus AppLoader_DeconstructedRomDirectory::ReadDisplayVersion(std::string
     if (control && !control->GetVersionString().empty()) {
         version = control->GetVersionString();
         return ResultStatus::Success;
+    }
+    if (romfs_version.empty()) {
+        const auto file_dir = dir ? dir : (file ? file->GetContainingDirectory() : nullptr);
+        if (file_dir) {
+            if (const auto title_dir = file_dir->GetParentDirectory()) {
+                romfs_version = RomFSProductVersion(title_dir->GetSubdirectory("romfs"));
+            }
+        }
     }
     if (!romfs_version.empty()) {
         version = romfs_version;

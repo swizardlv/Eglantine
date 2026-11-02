@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <charconv>
 #include <cstring>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "core/file_sys/fsmitm_romfsbuild.h"
@@ -178,11 +180,101 @@ bool RomFSBuildContext::AddFile(std::shared_ptr<RomFSBuildDirectoryContext> pare
                                 std::shared_ptr<RomFSBuildFileContext> file_ctx) {
     // Add a new file.
     num_files++;
+    if (num_files % 1000 == 0) {
+        std::fprintf(stderr, "[EglantinePS5] RomFS indexing: %llu files...\n", static_cast<unsigned long long>(num_files));
+        std::fflush(stderr);
+    }
     file_table_size +=
         sizeof(RomFSFileEntry) + Common::AlignUp(file_ctx->path_len - file_ctx->cur_path_ofs, 4);
     file_ctx->parent = std::move(parent_dir_ctx);
     files.emplace_back(std::move(file_ctx));
 
+    return true;
+}
+
+bool RomFSBuildContext::LoadFromCache(VirtualFile cache_file) {
+    if (!cache_file) {
+        return false;
+    }
+    const auto bytes = cache_file->ReadAllBytes();
+    if (bytes.size() < 14) {
+        return false;
+    }
+    std::string_view content(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    if (!content.starts_with("ROMFS_CACHE_V1\n")) {
+        return false;
+    }
+
+    std::fprintf(stderr, "[EglantinePS5] RomFS: Loading structure from cache (%zu bytes)...\n", bytes.size());
+    std::fflush(stderr);
+
+    std::unordered_map<std::string, std::shared_ptr<RomFSBuildDirectoryContext>> dir_map;
+    dir_map[""] = root;
+    dir_map["/"] = root;
+
+    std::size_t pos = 15;
+    while (pos < content.size()) {
+        const auto next_newline = content.find('\n', pos);
+        const auto line = content.substr(pos, next_newline == std::string_view::npos ? std::string_view::npos : next_newline - pos);
+        pos = (next_newline == std::string_view::npos) ? content.size() : next_newline + 1;
+
+        if (line.empty()) continue;
+
+        if (line.starts_with("D ")) {
+            const auto dir_path = line.substr(2);
+            const auto last_slash = dir_path.rfind('/');
+            const auto parent_path = (last_slash == 0 || last_slash == std::string_view::npos) ? std::string("") : std::string(dir_path.substr(0, last_slash));
+            const auto name = dir_path.substr(last_slash + 1);
+
+            auto it = dir_map.find(parent_path);
+            if (it == dir_map.end()) continue;
+            auto parent = it->second;
+
+            auto child = std::make_shared<RomFSBuildDirectoryContext>();
+            child->cur_path_ofs = parent->path_len + 1;
+            child->path_len = child->cur_path_ofs + static_cast<u32>(name.size());
+            child->path = parent->path + "/" + std::string(name);
+
+            if (!AddDirectory(parent, child)) continue;
+            dir_map[std::string(dir_path)] = child;
+        } else if (line.starts_with("F ")) {
+            const auto first_space = line.find(' ', 2);
+            if (first_space == std::string_view::npos) continue;
+            const auto size_str = line.substr(2, first_space - 2);
+            const auto file_path = line.substr(first_space + 1);
+
+            u64 size = 0;
+            std::from_chars(size_str.data(), size_str.data() + size_str.size(), size);
+
+            const auto last_slash = file_path.rfind('/');
+            const auto parent_path = (last_slash == 0 || last_slash == std::string_view::npos) ? std::string("") : std::string(file_path.substr(0, last_slash));
+            const auto name = file_path.substr(last_slash + 1);
+
+            auto it = dir_map.find(parent_path);
+            if (it == dir_map.end()) continue;
+            auto parent = it->second;
+
+            auto child = std::make_shared<RomFSBuildFileContext>();
+            child->cur_path_ofs = parent->path_len + 1;
+            child->path_len = child->cur_path_ofs + static_cast<u32>(name.size());
+            child->path = parent->path + "/" + std::string(name);
+            child->size = size;
+
+            const auto rel_path = file_path.starts_with('/') ? file_path.substr(1) : file_path;
+            child->source = base->GetFileWithKnownSize(rel_path, size);
+            if (!child->source) {
+                std::fprintf(stderr, "[EglantinePS5] RomFS cache: file not found: %.*s\n",
+                             static_cast<int>(rel_path.size()), rel_path.data());
+                return false;
+            }
+
+            AddFile(parent, std::move(child));
+        }
+    }
+
+    std::fprintf(stderr, "[EglantinePS5] RomFS: Successfully loaded from cache (%llu files, %llu dirs)\n",
+                 static_cast<unsigned long long>(num_files), static_cast<unsigned long long>(num_dirs));
+    std::fflush(stderr);
     return true;
 }
 
@@ -194,12 +286,27 @@ RomFSBuildContext::RomFSBuildContext(VirtualDir base_, VirtualDir ext_)
     num_dirs = 1;
     dir_table_size = 0x18;
 
-    VisitDirectory(base, ext, root);
+    VirtualFile cache_file = nullptr;
+    if (base != nullptr) {
+        cache_file = base->GetFile("romfs.cache");
+        if (cache_file == nullptr) {
+            if (const auto p = base->GetParentDirectory()) {
+                cache_file = p->GetFile("romfs.cache");
+            }
+        }
+    }
+
+    if (cache_file == nullptr || !LoadFromCache(cache_file)) {
+        VisitDirectory(base, ext, root);
+    }
 }
 
 RomFSBuildContext::~RomFSBuildContext() = default;
 
 std::vector<std::pair<u64, VirtualFile>> RomFSBuildContext::Build() {
+    std::fprintf(stderr, "[EglantinePS5] RomFS: Finalizing image structure (%llu files, %llu dirs)...\n",
+                 static_cast<unsigned long long>(num_files), static_cast<unsigned long long>(num_dirs));
+    std::fflush(stderr);
     const u64 dir_hash_table_entry_count = romfs_get_hash_table_count(num_dirs);
     const u64 file_hash_table_entry_count = romfs_get_hash_table_count(num_files);
     dir_hash_table_size = 4 * dir_hash_table_entry_count;

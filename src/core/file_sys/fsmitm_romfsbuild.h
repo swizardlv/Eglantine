@@ -40,6 +40,7 @@ private:
 
     void VisitDirectory(VirtualDir filesys, VirtualDir ext_dir,
                         std::shared_ptr<RomFSBuildDirectoryContext> parent);
+    bool LoadFromCache(VirtualFile cache_file);
 
     bool AddDirectory(std::shared_ptr<RomFSBuildDirectoryContext> parent_dir_ctx,
                       std::shared_ptr<RomFSBuildDirectoryContext> dir_ctx);

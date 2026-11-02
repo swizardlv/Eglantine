@@ -257,14 +257,56 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
            info.size.depth == 1;
 }
 
+// A native BCn 2D array whose mip chain is over 1.5 GiB (title 1's BC6H terrain arrays: 8192x8192x68,
+// 85 MiB a layer). Its sparse image would need a block of zeroes mapped over every 2 MiB of its range,
+// and the console's driver refuses one past about 2 GiB, so it keeps only its mip levels from
+// `level_offset` on, as a huge ASTC array does (TrimmedHostInfo).
+[[nodiscard]] u64 NativeMipBytes(const ImageInfo& info, u32 skip) {
+    using namespace VideoCore::Surface;
+    const u32 block_width = DefaultBlockWidth(info.format);
+    const u32 block_height = DefaultBlockHeight(info.format);
+    u64 bytes = 0;
+    for (s32 level = static_cast<s32>(skip); level < info.resources.levels; ++level) {
+        const u32 width = (std::max)(info.size.width >> level, 1U);
+        const u32 height = (std::max)(info.size.height >> level, 1U);
+        bytes += u64{(width + block_width - 1) / block_width} * ((height + block_height - 1) / block_height) *
+                 BytesPerBlock(info.format);
+    }
+    return bytes * info.resources.layers;
+}
+
+[[nodiscard]] bool IsHugeBcnArray(const ImageInfo& info) {
+    if (!IsPixelFormatBCn(info.format) || info.type != ImageType::e2D || info.resources.layers <= 1 ||
+        info.num_samples != 1 || info.size.depth != 1) {
+        return false;
+    }
+    return NativeMipBytes(info, 0) > (u64{3} << 29);
+}
+
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
-    if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D) {
+    const bool huge_bcn = IsHugeBcnArray(info);
+    if ((!WillUseAcceleratedAstcDecode(device, info) && !huge_bcn) || info.type != ImageType::e2D) {
         return info;
+    }
+    if (huge_bcn) {
+        // Native bytes, up to 1 GiB on the host.
+        while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+               NativeMipBytes(info, level_offset) > (u64{1} << 30)) {
+            ++level_offset;
+        }
+        ImageInfo host = info;
+        host.size.width = (std::max)(info.size.width >> level_offset, 1U);
+        host.size.height = (std::max)(info.size.height >> level_offset, 1U);
+        host.resources.levels -= static_cast<s32>(level_offset);
+        LOG_WARNING(Render_Vulkan, "{}x{}x{} BCn array would be {} MiB on the host; keeping mip levels {}+ ({}x{})",
+                    info.size.width, info.size.height, info.resources.layers, NativeMipBytes(info, 0) >> 20,
+                    level_offset, host.size.width, host.size.height);
+        return host;
     }
     const auto decoded_bytes = [&](u32 skip) {
         u64 bytes = 0;

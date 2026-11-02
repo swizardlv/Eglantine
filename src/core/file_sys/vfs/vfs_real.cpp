@@ -50,12 +50,15 @@ size_t MaxOpenFiles() {
     static const size_t limit = [] {
         struct rlimit rl;
         if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY) {
-            return size_t{8192};
+            return size_t{96};
         }
-        return static_cast<size_t>(std::max<rlim_t>(rl.rlim_cur, 576) - 512);
+        if (rl.rlim_cur <= 128) {
+            return size_t{32};
+        }
+        return static_cast<size_t>(std::max<rlim_t>(std::min<rlim_t>(rl.rlim_cur / 2, 96), 32));
     }();
 #endif
-    return (std::min)(size_t{8192}, limit);
+    return (std::min)(size_t{96}, limit);
 }
 
 bool IsWithinRoot(std::string_view root, std::string_view full_path) {
@@ -453,6 +456,11 @@ VirtualDir RealVfsDirectory::GetDirectoryRelative(std::string_view relative_path
 
 VirtualFile RealVfsDirectory::GetFile(std::string_view name) const {
     return GetFileRelative(name);
+}
+
+VirtualFile RealVfsDirectory::GetFileWithKnownSize(std::string_view relative_path, u64 size) const {
+    const auto full_path = FS::SanitizePath(path + '/' + std::string(relative_path));
+    return base.OpenFileFromEntry(full_path, size, path, perms);
 }
 
 VirtualDir RealVfsDirectory::GetSubdirectory(std::string_view name) const {
