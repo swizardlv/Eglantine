@@ -1333,6 +1333,12 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         runtime.TransitionImageLayout(image);
         return;
     }
+    if (image.guest_size_bytes > 64_MiB) {
+        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
+                    image.guest_size_bytes >> 20, image.gpu_addr);
+        runtime.TransitionImageLayout(image);
+        return;
+    }
     if (True(image.flags & ImageFlagBits::AsynchronousDecode)) {
         QueueAsyncDecode(image, image_id);
         return;
@@ -1488,16 +1494,9 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
                 const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
-                const u8* host_span = gpu_memory->GetSpan(layer_addr, image.info.layer_stride);
-                const bool use_chunked = !host_span && (image.info.layer_stride > 16_MiB);
-                std::span<const u8> swizzle_data;
-                std::optional<Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>> swizzle_guard;
-                if (host_span) {
-                    swizzle_data = std::span<const u8>(host_span, image.info.layer_stride);
-                } else if (!use_chunked) {
-                    swizzle_guard.emplace(*gpu_memory, layer_addr, image.info.layer_stride, &swizzle_data_buffer);
-                    swizzle_data = *swizzle_guard;
-                }
+                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
+                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
+                                 &swizzle_data_buffer);
                 auto layer_copies =
                     UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
                                    staging.mapped_span.subspan(i * layer_size, layer_size));
@@ -1572,18 +1571,8 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         return;
     }
 
-    const u8* host_span = gpu_memory->GetSpan(gpu_addr, image.guest_size_bytes);
-    const bool use_chunked = !host_span && (image.guest_size_bytes > 16_MiB);
-
-    std::span<const u8> swizzle_data;
-    std::optional<Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>> swizzle_guard;
-    if (host_span) {
-        swizzle_data = std::span<const u8>(host_span, image.guest_size_bytes);
-    } else if (!use_chunked) {
-        swizzle_guard.emplace(*gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
-        swizzle_data = *swizzle_guard;
-    }
-
+    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
+        *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     if (True(image.flags & ImageFlagBits::Converted)) {
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
         auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
@@ -1800,16 +1789,7 @@ void TextureCache<P>::QueueAsyncDecode(Image& image, ImageId image_id) {
     async_decodes.push_back(std::move(decode));
 
     std::vector<u8> local_unswizzle_data_buffer(image.unswizzled_size_bytes, 0);
-    const u8* host_span = gpu_memory->GetSpan(image.gpu_addr, image.guest_size_bytes);
-    const bool use_chunked = !host_span && (image.guest_size_bytes > 16_MiB);
-    std::span<const u8> swizzle_data;
-    std::optional<Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>> swizzle_guard;
-    if (host_span) {
-        swizzle_data = std::span<const u8>(host_span, image.guest_size_bytes);
-    } else if (!use_chunked) {
-        swizzle_guard.emplace(*gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
-        swizzle_data = *swizzle_guard;
-    }
+    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(*gpu_memory, image.gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     auto copies = UnswizzleImage(*gpu_memory, image.gpu_addr, image.info, swizzle_data, local_unswizzle_data_buffer);
     const size_t out_size = MapSizeBytes(image);
     if (False(image.flags & ImageFlagBits::ZeroFilled)) {

@@ -918,43 +918,9 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
 
         for (s32 layer = 0; layer < info.resources.layers; ++layer) {
             const std::span<u8> dst = output.subspan(host_offset);
-            if (!input.empty()) {
-                const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
-                UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                                 num_tiles.depth, block.height, block.depth, stride_alignment, gpu_memory.UsesNativeTiling());
-            } else {
-                const GPUVAddr layer_gpu_addr = gpu_addr + guest_offset + guest_layer_offset;
-                if (num_tiles.depth <= 1) {
-                    const u32 bytes_per_pixel = 1U << bpp_log2;
-                    const u32 lines_per_block = 8U << block.height;
-                    const u32 stride = Common::AlignUpLog2(num_tiles.width, stride_alignment) * bytes_per_pixel;
-                    const u32 gobs_in_x = Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT);
-                    const u32 block_row_bytes = gobs_in_x << (GOB_SIZE_SHIFT + block.height);
-                    const u32 num_block_rows = Common::DivCeilLog2(num_tiles.height, block.height + GOB_SIZE_Y_SHIFT);
-
-                    std::vector<u8> chunk(block_row_bytes);
-                    u32 unswizzled_row_offset = 0;
-                    for (u32 br = 0; br < num_block_rows; ++br) {
-                        const u32 block_y = br * lines_per_block;
-                        const u32 cur_lines = (std::min)(num_tiles.height - block_y, lines_per_block);
-                        const u32 cur_unswizzled_bytes = cur_lines * num_tiles.width * bytes_per_pixel;
-                        const u64 guest_offset_in_level = u64{br} * block_row_bytes;
-                        const u32 read_bytes = static_cast<u32>(
-                            std::min<u64>(block_row_bytes, level_sizes[level] - guest_offset_in_level));
-
-                        gpu_memory.ReadBlockUnsafe(layer_gpu_addr + guest_offset_in_level, chunk.data(), read_bytes);
-                        UnswizzleTexture(dst.subspan(unswizzled_row_offset, cur_unswizzled_bytes),
-                                         chunk, bytes_per_pixel, num_tiles.width, cur_lines,
-                                         1, block.height, 0, stride_alignment, gpu_memory.UsesNativeTiling());
-                        unswizzled_row_offset += cur_unswizzled_bytes;
-                    }
-                } else {
-                    std::vector<u8> layer_data(level_sizes[level]);
-                    gpu_memory.ReadBlockUnsafe(layer_gpu_addr, layer_data.data(), layer_data.size());
-                    UnswizzleTexture(dst, layer_data, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                                     num_tiles.depth, block.height, block.depth, stride_alignment, gpu_memory.UsesNativeTiling());
-                }
-            }
+            const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
+            UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
+                             num_tiles.depth, block.height, block.depth, stride_alignment, gpu_memory.UsesNativeTiling());
             guest_layer_offset += layer_stride;
             host_offset += host_bytes_per_layer;
         }
