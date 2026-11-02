@@ -216,6 +216,7 @@ private:
     vk::PipelineLayout msaa_copy_depth_stencil_pipeline_layout;
     vk::ShaderModule full_screen_vert;
     vk::ShaderModule blit_color_to_color_frag;
+    vk::ShaderModule blit_color_srgb_to_linear_frag;
     vk::ShaderModule blit_color_msaa_frag;
     vk::ShaderModule blit_depth_stencil_frag;
     vk::ShaderModule blit_depth_frag;
