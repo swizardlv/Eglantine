@@ -234,8 +234,8 @@ void TextureCache<P>::TickFrame() {
             // orcamento o mesmo trecho roda a 60 FPS (16.7 ms) e o cache fica com 3319 imagens em
             // vez de 8010. O espaco livre abaixo disso nao fica parado: sobra para buffers, para as
             // regioes GPU-only e para o driver.
-            critical_memory = (std::max)(critical_memory, (device_local / 4) * 3);
-            expected_memory = (std::max)(expected_memory, (device_local / 5) * 3);
+            critical_memory = (std::min)((std::max)(critical_memory, (device_local / 4) * 3), static_cast<u64>(2816_MiB));
+            expected_memory = (std::min)((std::max)(expected_memory, (device_local / 5) * 3), static_cast<u64>(2304_MiB));
             ApplyThresholdOverrides();
             native_critical_memory = critical_memory;
             native_expected_memory = expected_memory;
@@ -257,8 +257,8 @@ void TextureCache<P>::TickFrame() {
                     // deixa o driver paginar. Medido em MKW, 8 GB: com o alvo antigo (~5.5 GB de
                     // 6.5 GB) a corrida rodava a 57 a 79 ms por frame e o cache chegava a 8010
                     // imagens; com 60%/75% roda a 16.7 a 21 ms e o cache fica em ~3600 imagens.
-                    critical_memory = (budget / 4) * 3;
-                    expected_memory = (budget / 5) * 3;
+                    critical_memory = (std::min)((budget / 4) * 3, static_cast<u64>(2816_MiB));
+                    expected_memory = (std::min)((budget / 5) * 3, static_cast<u64>(2304_MiB));
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
@@ -276,8 +276,8 @@ void TextureCache<P>::TickFrame() {
     if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
         const u64 budget = runtime.GetDeviceMemoryBudget();
         if (budget > 2_GiB) {
-            expected_memory = (std::min)(expected_memory, (budget / 5) * 3);
-            critical_memory = (std::min)(critical_memory, (budget / 4) * 3);
+            expected_memory = (std::min)({expected_memory, (budget / 5) * 3, static_cast<u64>(2304_MiB)});
+            critical_memory = (std::min)({critical_memory, (budget / 4) * 3, static_cast<u64>(2816_MiB)});
         }
     }
     // If we can obtain the memory info, use it instead of the estimate.

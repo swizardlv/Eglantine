@@ -1876,10 +1876,7 @@ private:
 
         auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
         const auto cpu_addr_opt = registry.CpuAddressOf(address);
-        const auto gpu_addr_opt = registry.DeviceAddressOf(address);
-
         const u64 cpu_addr = cpu_addr_opt.value_or(address);
-        const u64 gpu_addr = gpu_addr_opt.value_or(address);
 
         auto& app_memory = system.ApplicationMemory();
         app_memory.WriteBlock(cpu_addr, bytes.data(), layout.pitch * height);
@@ -1887,14 +1884,6 @@ private:
             app_memory.WriteBlock(cpu_addr + layout.chroma_offset,
                                   bytes.data() + layout.chroma_offset,
                                   layout.pitch * ((height + 1) / 2));
-        }
-
-        auto& gpu_mem = system.Host1x().MemoryManager();
-        gpu_mem.WriteBlock(gpu_addr, bytes.data(), layout.pitch * height);
-        if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
-            gpu_mem.WriteBlock(gpu_addr + layout.chroma_offset,
-                               bytes.data() + layout.chroma_offset,
-                               layout.pitch * ((height + 1) / 2));
         }
 
         return {width, height};
