@@ -20,6 +20,7 @@ add_executable(tests
     core/internal_network/network.cpp
     video_core/memory_tracker.cpp
     video_core/vertex_repack.cpp
+    video_core/descriptor_table.cpp
     video_core/ampere_returns.cpp
     video_core/ampere_f2i.cpp
     video_core/ampere_ldc.cpp
