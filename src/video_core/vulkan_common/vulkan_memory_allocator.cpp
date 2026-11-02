@@ -258,6 +258,21 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
                         ci.arrayLayers, static_cast<u32>(ci.format));
             return sparse;
         }
+        VkImageCreateInfo scaled_ci = ci;
+        while (scaled_ci.extent.width > 512 || scaled_ci.extent.height > 512) {
+            scaled_ci.extent.width = (std::max)(1u, scaled_ci.extent.width / 2);
+            scaled_ci.extent.height = (std::max)(1u, scaled_ci.extent.height / 2);
+            VmaAllocationCreateInfo relaxed = alloc_ci;
+            relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+            result = vmaCreateImage(allocator, &scaled_ci, &relaxed, &handle, &allocation, &alloc_info);
+            if (result == VK_SUCCESS) {
+                LOG_WARNING(Render_Vulkan,
+                            "Image {}x{}x{} (format {}) does not fit; scaled to {}x{} (result VK_SUCCESS)",
+                            ci.extent.width, ci.extent.height, ci.extent.depth,
+                            static_cast<u32>(ci.format), scaled_ci.extent.width, scaled_ci.extent.height);
+                break;
+            }
+        }
     }
     if (result != VK_SUCCESS) {
         LOG_CRITICAL(Render_Vulkan, "Image {}x{}x{} ({} levels, {} layers, format {}) failed: {}",
