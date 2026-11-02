@@ -280,11 +280,11 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         info.num_samples != 1 || info.size.depth != 1) {
         return false;
     }
-    return NativeMipBytes(info, 0) > (u64{3} << 29);
+    return NativeMipBytes(info, 0) > (u64{128} << 20);
 }
 
 // The host shape of an image whose decoded copy would not fit in VRAM: a GPU-decoded ASTC array
-// over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
+// over 128 MiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
@@ -293,10 +293,16 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
     if ((!WillUseAcceleratedAstcDecode(device, info) && !huge_bcn) || info.type != ImageType::e2D) {
         return info;
     }
+    const u64 max_bytes = []() -> u64 {
+        if (const char* env = std::getenv("EDEN_MAX_TEXTURE_ARRAY_MIB")) {
+            return static_cast<u64>(std::strtoull(env, nullptr, 10)) << 20;
+        }
+        return u64{128} << 20;
+    }();
     if (huge_bcn) {
-        // Native bytes, up to 1 GiB on the host.
+        // Native bytes, up to max_bytes on the host.
         while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
-               NativeMipBytes(info, level_offset) > (u64{1} << 30)) {
+               NativeMipBytes(info, level_offset) > max_bytes) {
             ++level_offset;
         }
         ImageInfo host = info;
@@ -316,11 +322,11 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         }
         return bytes * info.resources.layers;
     };
-    if (decoded_bytes(0) <= (u64{1} << 30)) {
+    if (decoded_bytes(0) <= max_bytes) {
         return info;
     }
     while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
-           decoded_bytes(level_offset) > (u64{512} << 20)) {
+           decoded_bytes(level_offset) > max_bytes) {
         ++level_offset;
     }
     ImageInfo host = info;
