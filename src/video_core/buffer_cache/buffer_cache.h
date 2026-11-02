@@ -140,10 +140,10 @@ void BufferCache<P>::TickFrame() {
         total_used_memory = runtime.GetDeviceMemoryUsage();
     }
     if (gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
-        critical_memory = (std::min)(critical_memory, 3584_MiB);
-        minimum_memory = (std::min)(minimum_memory, 2816_MiB);
-        if (buffer_bytes >= 256_MiB || total_used_memory >= critical_memory) {
-            RunGarbageCollector(buffer_bytes >= 512_MiB || total_used_memory >= critical_memory);
+        critical_memory = (std::min)(critical_memory, static_cast<u64>(1408_MiB));
+        minimum_memory = (std::min)(minimum_memory, static_cast<u64>(1024_MiB));
+        if (buffer_bytes >= 128_MiB || total_used_memory >= critical_memory) {
+            RunGarbageCollector(buffer_bytes >= 256_MiB || total_used_memory >= critical_memory);
         }
     } else if (total_used_memory >= minimum_memory) {
         RunGarbageCollector(total_used_memory >= critical_memory);
