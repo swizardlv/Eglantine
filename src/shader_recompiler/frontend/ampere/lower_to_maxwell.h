@@ -1019,6 +1019,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0xf0a8000000000000ULL | predicate | (u64{1} << 43) |
                 (u64{1} << 44) | (u64{1} << 39) | (u64{7} << 39));
             break;
+        case 0x59f: // Compute fence / barrier
+            break;
         case 0x388: case 0x984: { // Shared memory load/store with scaled register offsets.
             const u32 width = insn.Bits(73, 3), stride = insn.Bits(78, 2);
             // LDS [Ra.Xn + URb + offset]: bit 91 adds a uniform register (bits 32-39).
@@ -1646,6 +1648,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         case 0x923: { // ISBERD
             const u32 src = insn.Bits(24, 8);
             emit(base(0xefd0000000000000ULL) | (u64{src} << 8));
+            break;
+        }
+        case 0x927: { // ISBEWR: Stage buffer write in mesh/task/vertex shaders
+            // Dropping this write allows the vertex/geometry shader to compile and execute
+            // its standard attribute stores without rejecting the pipeline or skipping draws.
             break;
         }
         case 0x321: // ALD
