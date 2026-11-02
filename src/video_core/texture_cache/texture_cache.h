@@ -148,7 +148,8 @@ void TextureCache<P>::RunGarbageCollector() {
         if (True(image.flags & ImageFlagBits::IsDecoding)) {
             return false;
         }
-        const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap);
+        const bool must_download = IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap) &&
+                                   image.unswizzled_size_bytes <= 32_MiB;
         if ((!aggressive_mode && True(image.flags & ImageFlagBits::CostlyLoad)) || (!high_priority_mode && must_download)) {
             return false;
         }
@@ -762,7 +763,7 @@ template <class P>
 void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size) {
     boost::container::small_vector<ImageId, 16> images;
     ForEachImageInRegion(cpu_addr, size, [this, &images](ImageId image_id, ImageBase& image) {
-        if (!IsDownloadable(image)) {
+        if (!IsDownloadable(image) || image.unswizzled_size_bytes > 32_MiB) {
             return;
         }
         image.flags &= ~ImageFlagBits::GpuModified;
@@ -790,7 +791,7 @@ std::optional<VideoCore::RasterizerDownloadArea> TextureCache<P>::GetFlushArea(D
                                                                                u64 size) {
     std::optional<VideoCore::RasterizerDownloadArea> area{};
     ForEachImageInRegion(cpu_addr, size, [&](ImageId, ImageBase& image) {
-        if (False(image.flags & ImageFlagBits::GpuModified)) {
+        if (False(image.flags & ImageFlagBits::GpuModified) || image.unswizzled_size_bytes > 32_MiB) {
             return;
         }
         if (!area) {
@@ -1040,6 +1041,17 @@ void TextureCache<P>::CommitAsyncFlushes() {
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         auto& download_ids = uncommitted_downloads;
         const size_t redundant_images = DeduplicatePendingImageDownloads(download_ids, slot_images);
+        std::erase_if(download_ids, [&](const PendingDownload& download_info) {
+            if (download_info.is_swizzle) {
+                const auto& img = download_info.GetImage(slot_images);
+                if (img.unswizzled_size_bytes > 32_MiB) {
+                    LOG_WARNING(HW_GPU, "Skipping download of huge {} MiB image {:#x}",
+                                img.unswizzled_size_bytes >> 20, img.gpu_addr);
+                    return true;
+                }
+            }
+            return false;
+        });
         if (download_ids.empty()) {
             committed_downloads.emplace_back(std::move(uncommitted_downloads));
             uncommitted_downloads.clear();
@@ -3197,6 +3209,7 @@ void TextureCache<P>::BindRenderTarget(ImageViewId* old_id, ImageViewId new_id) 
     if (new_id) {
         const ImageViewBase& old_view = slot_image_views[new_id];
         if (True(old_view.flags & ImageViewFlagBits::PreemtiveDownload) &&
+            slot_images[old_view.image_id].unswizzled_size_bytes <= 32_MiB &&
             False(slot_images[old_view.image_id].flags & (ImageFlagBits::Unbacked | ImageFlagBits::TrimmedLevels))) {
             const PendingDownload new_download{true, 0, old_view.image_id};
             uncommitted_downloads.emplace_back(new_download);
