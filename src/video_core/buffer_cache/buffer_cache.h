@@ -88,8 +88,11 @@ void BufferCache<P>::RunGarbageCollector(bool aggressive_gc) {
             DownloadBufferMemory(slot_buffers[buffer_id]);
         }
     }
+    if (aggressive_gc && !evicted.empty()) {
+        runtime.Finish();
+    }
     for (const BufferId buffer_id : evicted) {
-        DeleteBuffer(buffer_id);
+        DeleteBuffer(buffer_id, false, aggressive_gc);
     }
 }
 
@@ -137,13 +140,10 @@ void BufferCache<P>::TickFrame() {
         total_used_memory = runtime.GetDeviceMemoryUsage();
     }
     if (gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
-        // Switch 2 titles fill the device with textures (their collector watches the budget);
-        // title 1's buffers were ~200 MiB of an 8 GB GPU's ~6.8 GB in use, yet this collector
-        // ran aggressively every frame on the device-wide figure, evicting up to 64 buffers (and
-        // downloading the GPU-written ones, ~5% of the GPU thread) that were recreated later.
-        // Collect when the buffers themselves are large.
-        if (buffer_bytes >= 1_GiB) {
-            RunGarbageCollector(buffer_bytes >= 2_GiB);
+        critical_memory = (std::min)(critical_memory, 3584_MiB);
+        minimum_memory = (std::min)(minimum_memory, 2816_MiB);
+        if (buffer_bytes >= 256_MiB || total_used_memory >= critical_memory) {
+            RunGarbageCollector(buffer_bytes >= 512_MiB || total_used_memory >= critical_memory);
         }
     } else if (total_used_memory >= minimum_memory) {
         RunGarbageCollector(total_used_memory >= critical_memory);
@@ -1713,15 +1713,15 @@ typename BufferCache<P>::OverlapResult BufferCache<P>::ResolveOverlaps(DAddr dev
             end = overlap_end;
         }
         stream_score += overlap.StreamScore();
-        if (stream_score > STREAM_LEAP_THRESHOLD && !has_stream_leap) {
+        if (stream_score > STREAM_LEAP_THRESHOLD && !has_stream_leap && (end - begin) < 2_MiB) {
             // When this memory region has been joined a bunch of times, we assume it's being used
             // as a stream buffer. Increase the size to skip constantly recreating buffers.
             has_stream_leap = true;
             if (expands_right) {
-                expand_begin(CACHING_PAGESIZE * 128);
+                expand_begin(512_KiB);
             }
             if (expands_left) {
-                expand_end(CACHING_PAGESIZE * 128);
+                expand_end(512_KiB);
             }
         }
     }
@@ -1750,11 +1750,11 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
     });
     new_buffer.MarkUsage(copies[0].dst_offset, copies[0].size);
     runtime.CopyBuffer(new_buffer, overlap, copies, true);
-#ifdef YUZU_LEGACY
-    if (immediately_free)
+    const bool immediate_destroy = overlap.SizeBytes() >= 1_MiB;
+    if (immediate_destroy) {
         runtime.Finish();
-#endif
-    DeleteBuffer(overlap_id, true);
+    }
+    DeleteBuffer(overlap_id, true, immediate_destroy);
 }
 
 template <class P>
@@ -2095,7 +2095,7 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
 }
 
 template <class P>
-void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
+void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark, bool immediate_destroy) {
     if constexpr (requires { runtime.OnBufferDeleted(slot_buffers[buffer_id]); }) {
         runtime.OnBufferDeleted(slot_buffers[buffer_id]);
     }
@@ -2139,10 +2139,9 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 
     Unregister(buffer_id);
 
-#ifdef YUZU_LEGACY
-    if (!do_not_mark || !immediately_free)
-#endif
+    if (!immediate_destroy) {
         delayed_destruction_ring.Push(std::move(slot_buffers[buffer_id]));
+    }
 
     slot_buffers.erase(buffer_id);
 
