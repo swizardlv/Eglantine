@@ -245,32 +245,43 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         VmaAllocationCreateInfo relaxed = alloc_ci;
         relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
         result = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            relaxed.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+            result = vmaCreateImage(allocator, &ci, &relaxed, &handle, &allocation, &alloc_info);
+        }
     }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D) {
-        // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
-        // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
-        // nothing bound, so views and copies still work, instead of aborting.
-        if (vk::Image sparse = CreateUnbackedImage(ci)) {
-            LOG_WARNING(Render_Vulkan,
-                        "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit; using an "
-                        "unbacked sparse image",
-                        ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
-                        ci.arrayLayers, static_cast<u32>(ci.format));
-            return sparse;
+        // First try downscaling for 2D images with backing memory so render targets/textures stay visible
+        if (!(ci.flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT)) {
+            VkImageCreateInfo scaled_ci = ci;
+            while (scaled_ci.extent.width > 16 || scaled_ci.extent.height > 16) {
+                scaled_ci.extent.width = (std::max)(1u, scaled_ci.extent.width / 2);
+                scaled_ci.extent.height = (std::max)(1u, scaled_ci.extent.height / 2);
+                const u32 max_mips = static_cast<u32>(std::floor(std::log2((std::max)(scaled_ci.extent.width, scaled_ci.extent.height)))) + 1;
+                scaled_ci.mipLevels = (std::min)(scaled_ci.mipLevels, max_mips);
+                VmaAllocationCreateInfo relaxed = alloc_ci;
+                relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+                result = vmaCreateImage(allocator, &scaled_ci, &relaxed, &handle, &allocation, &alloc_info);
+                if (result == VK_SUCCESS) {
+                    LOG_WARNING(Render_Vulkan,
+                                "Image {}x{}x{} ({} layers, format {}) does not fit; scaled to {}x{} (result VK_SUCCESS)",
+                                ci.extent.width, ci.extent.height, ci.extent.depth, ci.arrayLayers,
+                                static_cast<u32>(ci.format), scaled_ci.extent.width, scaled_ci.extent.height);
+                    break;
+                }
+            }
         }
-        VkImageCreateInfo scaled_ci = ci;
-        while (scaled_ci.extent.width > 512 || scaled_ci.extent.height > 512) {
-            scaled_ci.extent.width = (std::max)(1u, scaled_ci.extent.width / 2);
-            scaled_ci.extent.height = (std::max)(1u, scaled_ci.extent.height / 2);
-            VmaAllocationCreateInfo relaxed = alloc_ci;
-            relaxed.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
-            result = vmaCreateImage(allocator, &scaled_ci, &relaxed, &handle, &allocation, &alloc_info);
-            if (result == VK_SUCCESS) {
+        if (result != VK_SUCCESS) {
+            // Too big to back at all, e.g. title 1's sparse virtual texture arrays (8192x8192,
+            // 68 layers, ~23 GB): on the console only resident tiles have memory. Use an image with
+            // nothing bound, so views and copies still work, instead of aborting.
+            if (vk::Image sparse = CreateUnbackedImage(ci)) {
                 LOG_WARNING(Render_Vulkan,
-                            "Image {}x{}x{} (format {}) does not fit; scaled to {}x{} (result VK_SUCCESS)",
-                            ci.extent.width, ci.extent.height, ci.extent.depth,
-                            static_cast<u32>(ci.format), scaled_ci.extent.width, scaled_ci.extent.height);
-                break;
+                            "Image {}x{}x{} ({} levels, {} layers, format {}) does not fit; using an "
+                            "unbacked sparse image",
+                            ci.extent.width, ci.extent.height, ci.extent.depth, ci.mipLevels,
+                            ci.arrayLayers, static_cast<u32>(ci.format));
+                return sparse;
             }
         }
     }

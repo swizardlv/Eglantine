@@ -471,11 +471,12 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     initial_offset = sizeof(sph);
     texture_bound = maxwell3d->regs.bindless_texture_const_buffer_slot;
     if (maxwell3d->GetNativeMacroEngine().native_turing) {
-        if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel) {
+        if (program != Maxwell::ShaderType::VertexA && program != Maxwell::ShaderType::VertexB &&
+            program != Maxwell::ShaderType::Pixel && program != Maxwell::ShaderType::Geometry) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
-            const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 : 0;
+            const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 : (program == Maxwell::ShaderType::Geometry ? 3 : 0);
             const auto& table = maxwell3d->state.shader_stages[native_stage].const_buffers[1];
             if (table.enabled && table.size && table.size <= Tegra::Engines::Maxwell3D::Regs::MaxConstBufferSize) {
                 std::vector<u8> bytes(table.size);
@@ -484,7 +485,19 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                 dump.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
             }
         }
-        InitializeNativeCode();
+        if (program == Maxwell::ShaderType::Geometry && sph.common0.geometry_passthrough != 0) {
+            code.resize(sizeof(sph) / sizeof(u64));
+            std::memcpy(code.data(), &sph, sizeof(sph));
+            code.push_back(0xe30000000007000fULL);
+            code.push_back(0);
+            const std::array<u32, 1> offsets{0};
+            Shader::Ampere::AppendNativeAddressMap(code, offsets);
+            cached_lowest = 0;
+            cached_highest = static_cast<u32>(code.size() * sizeof(u64));
+            native_source_size = sizeof(sph) + sizeof(Shader::Ampere::Instruction);
+        } else {
+            InitializeNativeCode();
+        }
     }
     gp_passthrough_mask = maxwell3d->regs.post_vtg_shader_attrib_skip_mask;
     switch (program) {

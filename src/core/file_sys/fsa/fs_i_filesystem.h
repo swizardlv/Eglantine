@@ -163,7 +163,7 @@ private:
     }
 
     Result DoCommit() {
-        R_THROW(ResultNotImplemented);
+        R_SUCCEED();
     }
 
     Result DoGetFreeSpaceSize(s64* out, const Path& path) {
@@ -189,15 +189,15 @@ private:
 
     // These aren't accessible as commands
     Result DoCommitProvisionally(s64 counter) {
-        R_THROW(ResultNotImplemented);
+        R_SUCCEED();
     }
 
     Result DoRollback() {
-        R_THROW(ResultNotImplemented);
+        R_SUCCEED();
     }
 
     Result DoFlush() {
-        R_THROW(ResultNotImplemented);
+        R_SUCCEED();
     }
 
     Service::FileSystem::VfsDirectoryServiceWrapper backend;

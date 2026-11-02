@@ -855,7 +855,7 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
                                                                    const ImageInfo& info,
                                                                    std::span<const u8> input,
                                                                    std::span<u8> output) {
-    const size_t guest_size_bytes = input.size_bytes();
+    const size_t guest_size_bytes = input.empty() ? CalculateGuestSizeInBytes(info) : input.size_bytes();
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
     const Extent2D tile_size = DefaultBlockSize(info.format);
     const Extent3D size = info.size;
@@ -918,9 +918,21 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
 
         for (s32 layer = 0; layer < info.resources.layers; ++layer) {
             const std::span<u8> dst = output.subspan(host_offset);
-            const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
-            UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
-                             num_tiles.depth, block.height, block.depth, stride_alignment, gpu_memory.UsesNativeTiling());
+            if (input.empty()) {
+                const GPUVAddr layer_gpu_addr = gpu_addr + guest_offset + guest_layer_offset;
+                auto read_block = [&](u32 offset, void* buf, u32 sz) {
+                    gpu_memory.ReadBlockUnsafe(layer_gpu_addr + offset, buf, sz);
+                };
+                Tegra::Texture::UnswizzleTextureFromMemory(
+                    dst, read_block, 1U << bpp_log2, num_tiles.width, num_tiles.height,
+                    num_tiles.depth, block.height, block.depth, stride_alignment,
+                    gpu_memory.UsesNativeTiling());
+            } else {
+                const std::span<const u8> src = input.subspan(guest_offset + guest_layer_offset);
+                UnswizzleTexture(dst, src, 1U << bpp_log2, num_tiles.width, num_tiles.height,
+                                 num_tiles.depth, block.height, block.depth, stride_alignment,
+                                 gpu_memory.UsesNativeTiling());
+            }
             guest_layer_offset += layer_stride;
             host_offset += host_bytes_per_layer;
         }

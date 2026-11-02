@@ -216,8 +216,8 @@ void TextureCache<P>::TickFrame() {
         if (!native_thresholds_applied && gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
             native_thresholds_applied = true;
             const u64 device_local = runtime.GetDeviceLocalMemory();
-            critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
-            expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
+            critical_memory = (std::min)((std::max)(critical_memory, device_local - 256_MiB), 3584_MiB);
+            expected_memory = (std::min)((std::max)(expected_memory, device_local - 1280_MiB), 2816_MiB);
             ApplyThresholdOverrides();
             native_critical_memory = critical_memory;
             native_expected_memory = expected_memory;
@@ -236,8 +236,8 @@ void TextureCache<P>::TickFrame() {
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
-                    critical_memory = budget - margin;
-                    expected_memory = budget - 2 * margin;
+                    critical_memory = (std::min)(budget - margin, 3584_MiB);
+                    expected_memory = (std::min)(budget - 2 * margin, 2816_MiB);
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
@@ -1324,13 +1324,6 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         TrackImage(image, image_id);
     }
 
-    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
-        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
-                    (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
-        runtime.TransitionImageLayout(image);
-        return;
-    }
-
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
         RefreshSparseLayers(image);
         return;
@@ -1373,9 +1366,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
-    auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+    const size_t upload_size = MapSizeBytes(image);
+    auto staging = runtime.UploadStagingBuffer(upload_size);
     UploadImageContents(image, staging);
     runtime.InsertUploadMemoryBarrier();
+    if (upload_size > 32_MiB) {
+        runtime.Finish();
+    }
 }
 
 template <class P>
@@ -1514,11 +1511,8 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
                 const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
-                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
-                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
-                                 &swizzle_data_buffer);
                 auto layer_copies =
-                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
+                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, {},
                                    staging.mapped_span.subspan(i * layer_size, layer_size));
                 for (BufferImageCopy copy : layer_copies) {
                     // A host image that keeps only the levels from host_level_offset on.
@@ -1598,15 +1592,13 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         return;
     }
 
-    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
-        *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     if (True(image.flags & ImageFlagBits::Converted)) {
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
-        auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
+        auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, {}, unswizzle_data_buffer);
         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
         image.UploadMemory(staging, copies);
     } else {
-        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);
+        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, {}, mapped_span);
         image.UploadMemory(staging, copies);
     }
 }
@@ -1887,12 +1879,16 @@ void TextureCache<P>::TickAsyncDecode() {
             i = async_decodes.erase(i);
             continue;
         }
-        auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
+        const size_t decode_size = MapSizeBytes(image);
+        auto staging = runtime.UploadStagingBuffer(decode_size);
         std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, async_decode->copies);
         image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
+        if (decode_size > 32_MiB) {
+            runtime.Finish();
+        }
         i = async_decodes.erase(i);
     }
     if (has_uploads) {

@@ -61,6 +61,7 @@ private:
         u64 index;
         u64 tick = 0;
         bool deferred{};
+        VkDeviceSize size = 0;
 
         StagingBufferRef Ref() const noexcept {
             return {

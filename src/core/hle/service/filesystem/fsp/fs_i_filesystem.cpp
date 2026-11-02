@@ -135,9 +135,9 @@ Result IFileSystem::GetEntryType(
 }
 
 Result IFileSystem::Commit() {
-    LOG_WARNING(Service_FS, "(STUBBED) called");
+    LOG_DEBUG(Service_FS, "called");
 
-    R_SUCCEED();
+    R_RETURN(backend->Commit());
 }
 
 Result IFileSystem::GetFreeSpaceSize(
