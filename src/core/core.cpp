@@ -329,12 +329,6 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetGlobal(false);
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
-        if (switch2_program &&
-            Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive) {
-            LOG_INFO(Core, "Switch 2 program: using Conservative VRAM mode for shared memory budget");
-            Settings::values.vram_usage_mode.SetGlobal(false);
-            Settings::values.vram_usage_mode.SetValue(Settings::VramUsageMode::Conservative);
-        }
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz
