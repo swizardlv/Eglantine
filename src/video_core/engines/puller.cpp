@@ -235,7 +235,7 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
             .address = regs.semaphore_address.SemaphoreAddress(),
             .value = regs.semaphore_sequence,
             .operation = static_cast<u32>(op),
-            .since = std::chrono::steady_clock::now(),
+            .since = {},
             .reported = false,
         };
         if (op != GpuSemaphoreOperation::AcquireEqual && op != GpuSemaphoreOperation::AcquireGequal &&
@@ -248,6 +248,9 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         if (acquire.Matches(ReadSemaphoreWord(dma_pusher, acquire.address))) {
             return;
         }
+        // The clock is only for the delayed-wait warning. Already-satisfied
+        // acquires must not pay for a host clock query on every GPU command.
+        acquire.since = std::chrono::steady_clock::now();
         // Registered before the fences run, so a release among them that meets the value counts
         // even if a later one overwrites it.
         auto& waiters = Nx2SemaphoreWaiters::Get();
