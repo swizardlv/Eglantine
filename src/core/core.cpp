@@ -502,6 +502,9 @@ struct System::Impl {
         fs_controller.Reset();
         cheat_engine.reset();
         core_timing.ClearPendingEvents();
+        if (content_provider) {
+            content_provider->SetSlot(FileSys::ContentProviderUnionSlot::NupAddOns, nullptr);
+        }
         app_loader.reset();
         audio_core.reset();
         gpu_core.reset();

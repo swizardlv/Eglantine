@@ -12,6 +12,7 @@
 
 namespace FileSys {
 class NACP;
+class NupAddOnProvider;
 class NupContainer;
 } // namespace FileSys
 
@@ -19,7 +20,7 @@ namespace Loader {
 
 /// Loads a NUP (NX Package) container: loose ExeFS/RomFS trees for a base
 /// program plus its updates in one file. The newest update package is layered
-/// over the base; add-on content packages are recognized but not yet mounted.
+/// over the base; add-on content packages are offered to the game through a content provider.
 class AppLoader_NUP final : public AppLoader {
 public:
     explicit AppLoader_NUP(FileSys::VirtualFile file_);
@@ -53,6 +54,7 @@ public:
 
 private:
     std::unique_ptr<FileSys::NupContainer> nup;
+    std::unique_ptr<FileSys::NupAddOnProvider> addon_provider;
     std::unique_ptr<AppLoader> secondary_loader;
 
     std::unique_ptr<FileSys::NACP> nacp_file;

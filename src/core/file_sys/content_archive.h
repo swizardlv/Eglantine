@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -67,6 +68,9 @@ inline bool IsDirectoryLogoPartition(const VirtualDir& pfs) {
 class NCA : public ReadOnlyVfsDirectory {
 public:
     explicit NCA(VirtualFile file, const NCA* base_nca = nullptr, bool allow_missing_base = false);
+    /// Data content that is not in an NCA file (a NUP keeps its add-ons as loose files): a title
+    /// and a RomFS, which is only built when it is asked for.
+    NCA(u64 title_id, std::function<VirtualFile()> romfs_source);
     ~NCA() override;
 
     Loader::ResultStatus GetStatus() const;
@@ -106,6 +110,9 @@ private:
 
     Core::Crypto::KeyManager& keys;
     std::shared_ptr<NcaReader> reader;
+
+    u64 loose_title_id{};
+    std::function<VirtualFile()> loose_romfs;
 };
 
 } // namespace FileSys

@@ -6,6 +6,7 @@
 #include <array>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "common/common_types.h"
+#include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_types.h"
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "core/loader/loader.h"
@@ -176,4 +178,41 @@ private:
     std::shared_ptr<NupDecompressCache> cache;
 };
 
+
+/**
+ * The add-on packages of a NUP as system contents, so that a game finds them as it finds an NSP's
+ * add-ons: aoc:u lists them and fsp-srv mounts them by data ID. They have no NCA, so GetEntry gives
+ * an NCA object without a file and the raw getters give nothing. A package's RomFS is built when
+ * the game first mounts it. The container must outlive this provider.
+ */
+class NupAddOnProvider final : public ContentProvider {
+public:
+    explicit NupAddOnProvider(NupContainer& nup_);
+    ~NupAddOnProvider() override;
+
+    std::size_t GetCount() const {
+        return addons.size();
+    }
+
+    void Refresh() override;
+    bool HasEntry(u64 title_id, ContentRecordType type) const override;
+    std::optional<u32> GetEntryVersion(u64 title_id) const override;
+    VirtualFile GetEntryUnparsed(u64 title_id, ContentRecordType type) const override;
+    VirtualFile GetEntryRaw(u64 title_id, ContentRecordType type) const override;
+    std::unique_ptr<NCA> GetEntry(u64 title_id, ContentRecordType type) const override;
+    std::vector<ContentProviderEntry> ListEntriesFilter(
+        std::optional<TitleType> title_type = {}, std::optional<ContentRecordType> record_type = {},
+        std::optional<u64> title_id = {}) const override;
+
+private:
+    VirtualFile OpenRomFS(u64 title_id) const;
+
+    NupContainer& nup;
+    std::map<u64, std::size_t> addons; ///< Title ID -> package index (its newest version)
+
+    mutable std::mutex romfs_mutex;
+    mutable std::map<u64, VirtualFile> romfs_files;
+};
+
 } // namespace FileSys
+

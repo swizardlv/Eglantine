@@ -118,6 +118,10 @@ NCA::NCA(VirtualFile file_, const NCA* base_nca, bool allow_missing_base)
     }
 }
 
+NCA::NCA(u64 title_id, std::function<VirtualFile()> romfs_source)
+    : status{Loader::ResultStatus::Success}, keys{Core::Crypto::KeyManager::Instance()},
+      loose_title_id{title_id}, loose_romfs{std::move(romfs_source)} {}
+
 NCA::~NCA() = default;
 
 Loader::ResultStatus NCA::GetStatus() const {
@@ -139,18 +143,24 @@ std::vector<VirtualDir> NCA::GetSubdirectories() const {
 }
 
 std::string NCA::GetName() const {
-    return file->GetName();
+    return file ? file->GetName() : std::string{};
 }
 
 VirtualDir NCA::GetParentDirectory() const {
-    return file->GetContainingDirectory();
+    return file ? file->GetContainingDirectory() : nullptr;
 }
 
 NCAContentType NCA::GetType() const {
+    if (!reader) {
+        return NCAContentType::Data;
+    }
     return static_cast<NCAContentType>(reader->GetContentType());
 }
 
 u64 NCA::GetTitleId() const {
+    if (!reader) {
+        return loose_title_id;
+    }
     if (is_update) {
         return reader->GetProgramId() | 0x800;
     }
@@ -158,17 +168,20 @@ u64 NCA::GetTitleId() const {
 }
 
 RightsId NCA::GetRightsId() const {
-    RightsId result;
+    RightsId result{};
+    if (!reader) {
+        return result;
+    }
     reader->GetRightsId(result.data(), result.size());
     return result;
 }
 
 u32 NCA::GetSDKVersion() const {
-    return reader->GetSdkAddonVersion();
+    return reader ? reader->GetSdkAddonVersion() : 0;
 }
 
 u8 NCA::GetKeyGeneration() const {
-    return reader->GetKeyGeneration();
+    return reader ? reader->GetKeyGeneration() : 0;
 }
 
 bool NCA::IsUpdate() const {
@@ -176,7 +189,7 @@ bool NCA::IsUpdate() const {
 }
 
 VirtualFile NCA::GetRomFS() const {
-    return romfs;
+    return loose_romfs ? loose_romfs() : romfs;
 }
 
 VirtualDir NCA::GetExeFS() const {

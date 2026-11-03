@@ -161,18 +161,6 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
                 program.localized_icons.front().second, "icon.dat");
         }
     }
-
-    const auto addon_count = std::count_if(nup->GetPackages().begin(), nup->GetPackages().end(),
-                                           [](const auto& package) {
-                                               return package.kind ==
-                                                      NupContainer::PackageKind::Addon;
-                                           });
-    if (addon_count > 0) {
-        LOG_WARNING(Loader,
-                    "NUP container has {} add-on content package(s); AoC mounting is not "
-                    "supported yet",
-                    addon_count);
-    }
 }
 
 AppLoader_NUP::~AppLoader_NUP() = default;
@@ -201,6 +189,16 @@ AppLoader::LoadResult AppLoader_NUP::Load(Kernel::KProcess& process, Core::Syste
         process.GetProcessId(), base_title_id,
         std::make_shared<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
                                                 system.GetFileSystemController()));
+
+    // Before the services start: aoc:u reads the list of add-ons once, when it is created. The
+    // system takes the provider out again at shutdown, before this loader goes.
+    addon_provider = std::make_unique<FileSys::NupAddOnProvider>(*nup);
+    if (addon_provider->GetCount() > 0) {
+        LOG_INFO(Loader, "NUP container has {} add-on content package(s)",
+                 addon_provider->GetCount());
+        system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::NupAddOns,
+                                       addon_provider.get());
+    }
 
     is_loaded = true;
     return result;

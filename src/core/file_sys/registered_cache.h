@@ -224,6 +224,7 @@ enum class ContentProviderUnionSlot {
     SDMC,           ///< SD Card
     FrontendManual, ///< Frontend-defined game list or similar
     External,       ///< External content from NSP/XCI files in configured directories
+    NupAddOns,      ///< Add-on content inside the running game's NUP file
     Count,
 };
 

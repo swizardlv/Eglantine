@@ -14,6 +14,8 @@
 
 #include "common/logging.h"
 #include "common/swap.h"
+#include "core/file_sys/content_archive.h"
+#include "core/file_sys/romfs.h"
 #include "core/file_sys/vfs/vfs_offset.h"
 
 namespace FileSys {
@@ -661,4 +663,88 @@ Loader::ResultStatus NupContainer::VerifyIntegrity(
     return Loader::ResultStatus::Success;
 }
 
+
+NupAddOnProvider::NupAddOnProvider(NupContainer& nup_) : nup{nup_} {
+    const auto& packages = nup.GetPackages();
+    for (std::size_t i = 0; i < packages.size(); ++i) {
+        const auto& package = packages[i];
+        if (package.kind != NupContainer::PackageKind::Addon || package.romfs_dir == NoDir) {
+            continue;
+        }
+        const auto [entry, added] = addons.try_emplace(package.title_id, i);
+        if (!added && package.version >= packages[entry->second].version) {
+            entry->second = i;
+        }
+    }
+}
+
+NupAddOnProvider::~NupAddOnProvider() = default;
+
+void NupAddOnProvider::Refresh() {}
+
+bool NupAddOnProvider::HasEntry(u64 title_id, ContentRecordType type) const {
+    return type == ContentRecordType::Data && addons.contains(title_id);
+}
+
+std::optional<u32> NupAddOnProvider::GetEntryVersion(u64 title_id) const {
+    const auto entry = addons.find(title_id);
+    if (entry == addons.end()) {
+        return std::nullopt;
+    }
+    return nup.GetPackages()[entry->second].version;
+}
+
+VirtualFile NupAddOnProvider::GetEntryUnparsed(u64, ContentRecordType) const {
+    return nullptr;
+}
+
+VirtualFile NupAddOnProvider::GetEntryRaw(u64, ContentRecordType) const {
+    return nullptr;
+}
+
+std::unique_ptr<NCA> NupAddOnProvider::GetEntry(u64 title_id, ContentRecordType type) const {
+    if (!HasEntry(title_id, type)) {
+        return nullptr;
+    }
+    return std::make_unique<NCA>(title_id, [this, title_id] { return OpenRomFS(title_id); });
+}
+
+std::vector<ContentProviderEntry> NupAddOnProvider::ListEntriesFilter(
+    std::optional<TitleType> title_type, std::optional<ContentRecordType> record_type,
+    std::optional<u64> title_id) const {
+    std::vector<ContentProviderEntry> out;
+    if ((title_type && *title_type != TitleType::AOC) ||
+        (record_type && *record_type != ContentRecordType::Data)) {
+        return out;
+    }
+    for (const auto& [id, package] : addons) {
+        if (!title_id || *title_id == id) {
+            out.push_back({id, ContentRecordType::Data});
+        }
+    }
+    return out;
+}
+
+VirtualFile NupAddOnProvider::OpenRomFS(u64 title_id) const {
+    // Service threads mount at the same time, and the container's directory cache has no lock.
+    const std::scoped_lock lock{romfs_mutex};
+    if (const auto found = romfs_files.find(title_id); found != romfs_files.end()) {
+        return found->second;
+    }
+    const auto entry = addons.find(title_id);
+    if (entry == addons.end()) {
+        return nullptr;
+    }
+    // GetRomFSDir builds and caches the package's RomFS dir; null when the package has none.
+    auto romfs = CreateRomFS(const_cast<NupContainer&>(nup).GetRomFSDir(entry->second));
+    if (romfs == nullptr) {
+        LOG_ERROR(Loader, "NUP add-on {:016X}: its RomFS could not be built", title_id);
+        return nullptr;
+    }
+    LOG_INFO(Loader, "NUP add-on {:016X} mounted ({} bytes)", title_id, romfs->GetSize());
+    romfs_files.emplace(title_id, romfs);
+    return romfs;
+}
+
 } // namespace FileSys
+
