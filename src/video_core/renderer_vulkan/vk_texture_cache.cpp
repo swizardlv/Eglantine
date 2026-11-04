@@ -283,7 +283,12 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // decode, so streamed textures are ready the frame they are first used instead of seconds later.
 [[nodiscard]] bool WillUseGpuBcnTranscode(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
-        IsHugeAstcArray(device, info) || info.type != ImageType::e2D || info.size.depth != 1) {
+        IsHugeAstcArray(device, info) || info.type != ImageType::e2D || info.size.depth != 1 ||
+        info.resources.layers > 1) {
+        return false;
+    }
+    const u64 texels = u64{info.size.width} * info.size.height;
+    if (texels > 2048U * 2048U) {
         return false;
     }
     return Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu &&
@@ -4191,20 +4196,31 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         },
         map, swizzles);
 
-    // Encode every level into one buffer, then copy it into the image.
+    // Encode each level into a staging buffer, then copy it into the image.
     const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
                      Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
     const u64 block_bytes = bc3 ? 16 : 8;
-    boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
-    u64 total = 0;
     for (u32 level = 0; level < levels; ++level) {
         const u32 level_width = (std::max)(width >> level, 1U);
         const u32 level_height = (std::max)(height >> level, 1U);
         const u32 blocks_x = Common::DivCeil(level_width, 4U);
         const u32 blocks_y = Common::DivCeil(level_height, 4U);
         const u64 size = u64{blocks_x} * blocks_y * layers * block_bytes;
-        copies.push_back({
-            .buffer_offset = total,
+        const auto output = staging_buffer_pool.Request(size, MemoryUsage::DeviceLocal);
+        bc_encoder_pass->Encode(*pending.views[level], level_width, level_height, layers, bc3,
+                                output.buffer, output.offset, size, 0);
+        scheduler.Record([](vk::CommandBuffer cmdbuf) {
+            const VkMemoryBarrier barrier{
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            };
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, barrier);
+        });
+        const BufferImageCopy copy{
+            .buffer_offset = 0,
             .buffer_size = size,
             .buffer_row_length = blocks_x * 4,
             .buffer_image_height = blocks_y * 4,
@@ -4215,26 +4231,9 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             },
             .image_offset{0, 0, 0},
             .image_extent{level_width, level_height, 1},
-        });
-        total += size;
-    }
-    const auto output = staging_buffer_pool.Request(total, MemoryUsage::DeviceLocal);
-    for (u32 level = 0; level < levels; ++level) {
-        bc_encoder_pass->Encode(*pending.views[level], copies[level].image_extent.width,
-                                copies[level].image_extent.height, layers, bc3, output.buffer,
-                                output.offset, total, copies[level].buffer_offset);
-    }
-    scheduler.Record([](vk::CommandBuffer cmdbuf) {
-        const VkMemoryBarrier barrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
         };
-        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               0, barrier);
-    });
-    image.UploadMemory(output.buffer, output.offset, copies);
+        image.UploadMemory(output.buffer, output.offset, std::span{&copy, 1});
+    }
     pending.tick = scheduler.CurrentTick();
     pending_transcodes.push_back(std::move(pending));
 }
