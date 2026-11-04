@@ -486,7 +486,7 @@ template <class P>
 SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_sampler_table : channel_state->graphics_sampler_table;
     if (index > table.current_limit) {
-        LOG_DEBUG(HW_GPU, "Invalid sampler index={}", index);
+        LOG_TRACE(HW_GPU, "Invalid sampler index={}", index);
         return NULL_SAMPLER_ID;
     }
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
@@ -715,7 +715,7 @@ template <class P>
 ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
     auto& table = compute ? channel_state->compute_image_table : channel_state->graphics_image_table;
     if (index > table.current_limit) {
-        LOG_DEBUG(HW_GPU, "Invalid image view index={}", index);
+        LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
         return NULL_IMAGE_VIEW_ID;
     }
     // Is new (on the tegra engine side)?
