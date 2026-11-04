@@ -219,6 +219,7 @@ add_executable(yuzu
     yuzu.qrc
     yuzu.rc
     migration_dialog.h migration_dialog.cpp
+    nup_metadata.h nup_metadata.cpp
     migration_worker.h migration_worker.cpp
     libqt_common.h libqt_common.cpp
 
