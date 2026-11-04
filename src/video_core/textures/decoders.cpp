@@ -4,12 +4,10 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <span>
-#include <vector>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -184,71 +182,6 @@ void Swizzle(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixe
     }
 }
 
-template <u32 BYTES_PER_PIXEL>
-static void UnswizzleFromMemoryImpl(
-    std::span<u8> output,
-    const std::function<void(u32 offset, void* dst, u32 size)>& read_block,
-    u32 width, u32 height, u32 depth, u32 block_height, u32 block_depth, u32 stride,
-    bool native_tiling) {
-    constexpr u32 origin_x = 0;
-    constexpr u32 origin_y = 0;
-    constexpr u32 origin_z = 0;
-
-    const u32 pitch = width * BYTES_PER_PIXEL;
-    const u32 gobs_in_x = Common::DivCeilLog2(stride, GOB_SIZE_X_SHIFT);
-    const u32 block_size = gobs_in_x << (GOB_SIZE_SHIFT + block_height + block_depth);
-    const u32 slice_size =
-        Common::DivCeilLog2(height, block_height + GOB_SIZE_Y_SHIFT) * block_size;
-
-    const u32 block_height_mask = (1U << block_height) - 1;
-    const u32 block_depth_mask = (1U << block_depth) - 1;
-    const u32 x_shift = GOB_SIZE_SHIFT + block_height + block_depth;
-    const u32 lines_per_block = 1U << (block_height + GOB_SIZE_Y_SHIFT);
-
-    std::vector<u8> block_buffer(block_size);
-
-    for (u32 slice = 0; slice < depth; ++slice) {
-        const u32 z = slice + origin_z;
-        const u32 offset_z = (z >> block_depth) * slice_size +
-                             ((z & block_depth_mask) << (GOB_SIZE_SHIFT + block_height));
-
-        for (u32 block_y_base = 0; block_y_base < height; block_y_base += lines_per_block) {
-            const u32 br = (block_y_base >> GOB_SIZE_Y_SHIFT) >> block_height;
-            const u32 block_swizzled_offset = offset_z + br * block_size;
-            read_block(block_swizzled_offset, block_buffer.data(), block_size);
-
-            const u32 lines_to_process = (std::min)(lines_per_block, height - block_y_base);
-            for (u32 l = 0; l < lines_to_process; ++l) {
-                const u32 line = block_y_base + l;
-                const u32 y = line + origin_y;
-                const u32 swizzled_y = pdep<SWIZZLE_Y_BITS>(y);
-
-                const u32 block_y = y >> GOB_SIZE_Y_SHIFT;
-                const u32 local_offset_y = (block_y & block_height_mask) << GOB_SIZE_SHIFT;
-
-                u32 swizzled_x = pdep<SWIZZLE_X_BITS>(origin_x * BYTES_PER_PIXEL);
-                for (u32 column = 0; column < width;
-                     ++column, incrpdep<SWIZZLE_X_BITS, BYTES_PER_PIXEL>(swizzled_x)) {
-                    const u32 x = (column + origin_x) * BYTES_PER_PIXEL;
-                    const u32 offset_x = (x >> GOB_SIZE_X_SHIFT) << x_shift;
-
-                    const u32 base_swizzled_offset = local_offset_y + offset_x;
-                    const u32 swizzled_offset =
-                        NativeGobOffset(base_swizzled_offset + (swizzled_x | swizzled_y), native_tiling);
-
-                    const u32 unswizzled_offset =
-                        slice * pitch * height + line * pitch + column * BYTES_PER_PIXEL;
-
-                    u8* const dst = &output[unswizzled_offset];
-                    const u8* const src = &block_buffer[swizzled_offset];
-
-                    std::memcpy(dst, src, BYTES_PER_PIXEL);
-                }
-            }
-        }
-    }
-}
-
 } // Anonymous namespace
 
 void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
@@ -260,37 +193,6 @@ void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes
     bytes_per_pixel = 1U << new_bpp;
     Swizzle<false>(output, input, bytes_per_pixel, width, height, depth, block_height, block_depth,
                    stride, native_tiling);
-}
-
-void UnswizzleTextureFromMemory(
-    std::span<u8> output,
-    const std::function<void(u32 offset, void* dst, u32 size)>& read_block,
-    u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
-    u32 block_height, u32 block_depth, u32 stride_alignment,
-    bool native_tiling) {
-    const u32 stride = Common::AlignUpLog2(width, stride_alignment) * bytes_per_pixel;
-    const u32 new_bpp = (std::min)(4U, static_cast<u32>(std::countr_zero(width * bytes_per_pixel)));
-    width = (width * bytes_per_pixel) >> new_bpp;
-    bytes_per_pixel = 1U << new_bpp;
-
-    switch (bytes_per_pixel) {
-#define BPP_CASE(x)                                                                                \
-    case x:                                                                                        \
-        return UnswizzleFromMemoryImpl<x>(output, read_block, width, height, depth,                \
-                                          block_height, block_depth, stride, native_tiling);
-        BPP_CASE(1)
-        BPP_CASE(2)
-        BPP_CASE(3)
-        BPP_CASE(4)
-        BPP_CASE(6)
-        BPP_CASE(8)
-        BPP_CASE(12)
-        BPP_CASE(16)
-#undef BPP_CASE
-    default:
-        ASSERT_MSG(false, "Invalid bytes_per_pixel={}", bytes_per_pixel);
-        break;
-    }
 }
 
 void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,

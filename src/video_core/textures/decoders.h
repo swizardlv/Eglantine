@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <functional>
 #include <span>
 
 #include "common/common_types.h"
@@ -31,14 +30,6 @@ constexpr u32 SWIZZLE_Y_BITS = 0b011010000;
 void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel,
                       u32 width, u32 height, u32 depth, u32 block_height, u32 block_depth,
                       u32 stride_alignment = 1, bool native_tiling = false);
-
-/// Unswizzles a block linear texture directly from memory reading in block-row chunks.
-void UnswizzleTextureFromMemory(
-    std::span<u8> output,
-    const std::function<void(u32 offset, void* dst, u32 size)>& read_block,
-    u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
-    u32 block_height, u32 block_depth, u32 stride_alignment = 1,
-    bool native_tiling = false);
 
 /// Swizzles linear memory into a block linear texture.
 void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,

@@ -1362,6 +1362,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         TrackImage(image, image_id);
     }
 
+    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
+        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
+                    (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
+        runtime.TransitionImageLayout(image);
+        return;
+    }
+
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
         RefreshSparseLayers(image);
         return;
@@ -1408,13 +1415,9 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
-    const size_t upload_size = MapSizeBytes(image);
-    auto staging = runtime.UploadStagingBuffer(upload_size);
+    auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
     UploadImageContents(image, staging);
     runtime.InsertUploadMemoryBarrier();
-    if (upload_size > 32_MiB) {
-        runtime.Finish();
-    }
 }
 
 template <class P>
@@ -1624,8 +1627,11 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
                 const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
+                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
+                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
+                                 &swizzle_data_buffer);
                 auto layer_copies =
-                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, {},
+                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
                                    staging.mapped_span.subspan(i * layer_size, layer_size));
                 for (BufferImageCopy copy : layer_copies) {
                     // A host image that keeps only the levels from host_level_offset on.
@@ -1705,13 +1711,15 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         return;
     }
 
+    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
+        *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     if (True(image.flags & ImageFlagBits::Converted)) {
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
-        auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, {}, unswizzle_data_buffer);
+        auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
         image.UploadMemory(staging, copies);
     } else {
-        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, {}, mapped_span);
+        const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);
         image.UploadMemory(staging, copies);
     }
 }
@@ -1993,16 +2001,12 @@ void TextureCache<P>::TickAsyncDecode() {
             i = async_decodes.erase(i);
             continue;
         }
-        const size_t decode_size = MapSizeBytes(image);
-        auto staging = runtime.UploadStagingBuffer(decode_size);
+        auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
         std::memcpy(staging.mapped_span.data(), async_decode->decoded_data.data(),
                     async_decode->decoded_data.size());
         image.UploadMemory(staging, async_decode->copies);
         image.flags &= ~ImageFlagBits::IsDecoding;
         has_uploads = true;
-        if (decode_size > 32_MiB) {
-            runtime.Finish();
-        }
         i = async_decodes.erase(i);
     }
     if (has_uploads) {
