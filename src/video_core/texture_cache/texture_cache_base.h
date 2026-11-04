@@ -141,6 +141,11 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
 
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;
+#if defined(PS5_NATIVE) || defined(__PS5__)
+    static constexpr u64 MaxCriticalMemory = 2560_MiB;
+#else
+    static constexpr u64 MaxCriticalMemory = 5_GiB;
+#endif
     static constexpr size_t GC_EMERGENCY_COUNTS = 2;
 
     using Runtime = typename P::Runtime;
@@ -561,6 +566,18 @@ private:
     static constexpr size_t TICKS_TO_DESTROY = 8;
 #endif
     DelayedDestructionRing<Image, TICKS_TO_DESTROY> sentenced_images;
+    /// Deleted images on runtimes that report GPU progress (CurrentTick, IsFree): destroyed, with
+    /// their device memory, as soon as the GPU is past them rather than TICKS_TO_DESTROY frames
+    /// later. While the collector deletes dozens a frame, eight frames of them held 1-1.5 GB of
+    /// VRAM above its threshold (title 1 on an 8 GB card: 6.6-7.0 GB in use against 5 GiB).
+    struct GpuSentencedImage {
+        u64 tick;
+        u64 bytes;
+        Image image;
+        std::vector<ImageView> views;
+    };
+    std::deque<GpuSentencedImage> gpu_sentenced_images;
+    u64 gpu_sentenced_bytes{};
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
 

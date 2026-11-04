@@ -201,6 +201,14 @@ void TextureCache<P>::RunGarbageCollector() {
 
 template <class P>
 void TextureCache<P>::ApplyThresholdOverrides(bool log) {
+    // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
+    // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
+    // MaxCriticalMemory on rather than near the card's budget.
+    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+    expected_memory =
+        (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
+    minimum_memory =
+        (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB override the collector's thresholds.
     for (const auto& [name, target] : {std::pair{"EDEN_NX2_TC_EXPECTED_MIB", &expected_memory},
                                        std::pair{"EDEN_NX2_TC_CRITICAL_MIB", &critical_memory}}) {
@@ -284,9 +292,17 @@ void TextureCache<P>::TickFrame() {
             critical_memory = (std::min)({critical_memory, (budget / 4) * 3, static_cast<u64>(1408_MiB)});
         }
     }
+    if constexpr (requires { runtime.CurrentTick(); }) {
+        while (!gpu_sentenced_images.empty() &&
+               runtime.IsFree(gpu_sentenced_images.front().tick + 1)) {
+            gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+            gpu_sentenced_images.pop_front();
+        }
+    }
     // If we can obtain the memory info, use it instead of the estimate.
     if (runtime.CanReportMemoryUsage()) {
         total_used_memory = runtime.GetDeviceMemoryUsage();
+        total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
     }
     // Every 600 frames: device memory in use against the collector's thresholds, and what the
     // images themselves account for (VRAM pressure makes the collector thrash).
@@ -1363,13 +1379,6 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         TrackImage(image, image_id);
     }
 
-    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
-        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
-                    (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
-        runtime.TransitionImageLayout(image);
-        return;
-    }
-
     if (True(image.flags & ImageFlagBits::SparseLayers)) {
         RefreshSparseLayers(image);
         return;
@@ -1383,6 +1392,13 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
         return;
     }
     image.dirty_layers.clear();
+
+    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
+        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
+                    (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
+        runtime.TransitionImageLayout(image);
+        return;
+    }
 
     if (True(image.flags & ImageFlagBits::Unbacked)) {
         // Nothing to upload into (and staging it could take tens of GB).
@@ -2995,7 +3011,8 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         total_used_memory -= GetScaledImageSizeBytes(image);
     }
     // TickFrame sets the total from the driver, which can be under the sum of these estimates.
-    total_used_memory -= (std::min)(total_used_memory, ImageMemoryBytes(slot_images[image_id]));
+    const u64 freed_bytes = ImageMemoryBytes(slot_images[image_id]);
+    total_used_memory -= (std::min)(total_used_memory, freed_bytes);
     const GPUVAddr gpu_addr = image.gpu_addr;
     const auto alloc_it = image_allocs_table.find(gpu_addr);
     if (alloc_it == image_allocs_table.end()) {
@@ -3049,9 +3066,10 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
         ASSERT_MSG(num_removed_overlaps == 1, "Invalid number of removed overlapps: {}",
                    num_removed_overlaps);
     }
+    std::vector<ImageView> views_to_sentence;
     for (const ImageViewId image_view_id : image_view_ids) {
         if (!immediate_delete) {
-            sentenced_image_view.Push(std::move(slot_image_views[image_view_id]));
+            views_to_sentence.push_back(std::move(slot_image_views[image_view_id]));
         }
         slot_image_views.erase(image_view_id);
     }
@@ -3060,7 +3078,16 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     if (retained) {
         LOG_INFO(Render_Vulkan, "Retained image for queued download: id={}", image_id.Value());
     } else if (!immediate_delete) {
-        sentenced_images.Push(std::move(slot_images[image_id]));
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            gpu_sentenced_images.push_back(
+                {runtime.CurrentTick(), freed_bytes, std::move(slot_images[image_id]), std::move(views_to_sentence)});
+            gpu_sentenced_bytes += freed_bytes;
+        } else {
+            for (auto& view : views_to_sentence) {
+                sentenced_image_view.Push(std::move(view));
+            }
+            sentenced_images.Push(std::move(slot_images[image_id]));
+        }
     }
     slot_images.erase(image_id);
 
