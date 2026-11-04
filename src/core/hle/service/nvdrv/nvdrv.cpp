@@ -133,6 +133,8 @@ Module::Module(Core::System& system)
     Devices::Nx2GpuMemoryRegistry::Get().Reset();
     Tegra::Nx2ClearSemaphoreRegions();
     Tegra::Nx2ClearSparseRegions();
+    Tegra::Nx2ClearGpuWrittenPages();
+    Tegra::Nx2SemaphoreWaiters::Get().Reset();
     Devices::g_nx2_driver = false;
     Tegra::g_nx2_ampere = false;
     Core::g_nx2_present_count = 0;

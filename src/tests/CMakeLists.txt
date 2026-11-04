@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_executable(tests
+    video_core/nx2_semaphore_hold.cpp
     common/bit_field.cpp
     common/cityhash.cpp
     common/container_hash.cpp
