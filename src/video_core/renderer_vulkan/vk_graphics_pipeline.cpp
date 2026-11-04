@@ -292,6 +292,27 @@ GraphicsPipeline::GraphicsPipeline(
         num_image_elements += Shader::NumDescriptors(info->image_descriptors);
         num_descriptor_entries += NumDescriptorEntries(*info);
     }
+    // Diagnostic for runaway descriptor counts (2026-11-04): an ImageDescriptor with a garbage
+    // count (texture_pass leaves it unclamped) explodes NumDescriptorEntries and the descriptor
+    // set layout/pool sizing below. Log the per-stage breakdown when the total is absurd.
+    if (num_descriptor_entries > (1u << 20)) {
+        LOG_WARNING(Render_Vulkan,
+                    "[EglantinePS5 diag] GraphicsPipeline num_descriptor_entries={} absurd",
+                    num_descriptor_entries);
+        for (size_t stage = 0; stage < NUM_STAGES; ++stage) {
+            const auto& image_descriptors = stage_infos[stage].image_descriptors;
+            if (image_descriptors.empty()) {
+                continue;
+            }
+            unsigned long long stage_total = 0;
+            for (const auto& desc : image_descriptors) {
+                stage_total += desc.count;
+            }
+            LOG_WARNING(Render_Vulkan,
+                        "[EglantinePS5 diag]   stage={} image_descriptors={} total_count={}", stage,
+                        image_descriptors.size(), stage_total);
+        }
+    }
     fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];
 
     DescriptorLayoutBuilder builder{MakeBuilder(device, stage_infos)};

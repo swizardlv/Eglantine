@@ -2729,6 +2729,12 @@ bool Image::InitSparseLayers() {
         bytes += it->imageMipTailSize;
     }
     s.layer_bytes = Common::AlignUp(bytes, tile);
+    // Diagnostic (2026-11-04): a garbage layer count balloons the vector below; log when absurd.
+    if (info.resources.layers > 2048) {
+        LOG_WARNING(Render_Vulkan,
+                    "[EglantinePS5 diag] sparse layered image {:#x}: {} layers suspicious ({}x{} {} levels)",
+                    gpu_addr, info.resources.layers, s.width, s.height, s.levels);
+    }
     s.layer_memory.assign(static_cast<size_t>(info.resources.layers), VK_NULL_HANDLE);
     LOG_INFO(Render_Vulkan,
              "Sparse layered image {:#x}: {}x{} {} levels {} layers, {} KiB a layer, block {}x{}",
@@ -2768,9 +2774,15 @@ bool Image::InitSparseTiles() {
     for (u32 level = 0; level < s.tail_level; ++level) {
         const u32 width = (std::max)(s.width >> level, 1U);
         const u32 height = (std::max)(s.height >> level, 1U);
-        s.level_tiles[level].assign(
-            size_t{Common::DivCeil(width, s.tile_width)} * Common::DivCeil(height, s.tile_height),
-            VK_NULL_HANDLE);
+        const size_t tile_count = size_t{Common::DivCeil(width, s.tile_width)} *
+                                      Common::DivCeil(height, s.tile_height);
+        // Diagnostic (2026-11-04): garbage dimensions balloon the vector below; log when absurd.
+        if (tile_count > (size_t{1} << 24)) {
+            LOG_WARNING(Render_Vulkan,
+                        "[EglantinePS5 diag] sparse tiled image {:#x}: level {} tile_count={} suspicious ({}x{} tile {}x{})",
+                        gpu_addr, level, tile_count, width, height, s.tile_width, s.tile_height);
+        }
+        s.level_tiles[level].assign(tile_count, VK_NULL_HANDLE);
     }
     if (SparseTilesModeOf(device) == SparseTilesMode::Aliased && !BindZeroBlock()) {
         LOG_WARNING(Render_Vulkan, "Sparse tiled image {:#x}: no zeroed block to share", gpu_addr);
@@ -4222,13 +4234,13 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .initialized = false,
             .level_view = [&pending](s32 level) { return *pending.views[level]; },
             .wait = true,
-            .layers = effective_layers,
-            .layer_view = [&pending, layer_views_base, num_layers, &effective_layers](s32 level, u32 layer) {
+            .layers = target_layers,
+            .layer_view = [&pending, layer_views_base, num_layers, target_layers](s32 level, u32 layer) {
                 if (num_layers <= 1 || layer_views_base == pending.views.size()) {
                     return *pending.views[level];
                 }
                 for (u32 k = 0; k < num_layers; ++k) {
-                    if (effective_layers[k] == layer) {
+                    if (target_layers[k] == layer) {
                         return *pending.views[layer_views_base + level * num_layers + k];
                     }
                 }

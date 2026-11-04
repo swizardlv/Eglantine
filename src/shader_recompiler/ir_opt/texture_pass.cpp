@@ -11,6 +11,7 @@
 #include <tuple>
 #include <limits>
 #include <boost/container/small_vector.hpp>
+#include <cstdio>
 
 #include "common/settings.h"
 #include "shader_recompiler/environment.h"
@@ -904,6 +905,30 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             if (IsPixelFormatSNorm(pixel_format)) {
                 PatchTexelFetch(*texture_inst.block, *texture_inst.inst, pixel_format);
             }
+        }
+    }
+    // Diagnostic for the 96 MiB image-descriptor heap site (2026-11-04): unlike the sampled
+    // texture path above, ImageDescriptor.count takes cbuf.count unclamped. Log when the
+    // descriptor vector or any single count looks abnormal, so the offending shader's stage
+    // and constant-buffer sources can be identified from the log.
+    {
+        const auto& image_descriptors = program.info.image_descriptors;
+        bool suspicious = image_descriptors.size() > 256;
+        u64 total_count = 0;
+        for (const auto& desc : image_descriptors) {
+            total_count += desc.count;
+            suspicious = suspicious || desc.count > 4096;
+        }
+        if (suspicious) {
+            std::fprintf(stderr,
+                         "[EglantinePS5 diag] TexturePass stage=%d image_descriptors=%zu total_count=%llu:",
+                         static_cast<int>(program.stage), image_descriptors.size(),
+                         static_cast<unsigned long long>(total_count));
+            for (const auto& desc : image_descriptors) {
+                std::fprintf(stderr, " [count=%u cbuf=%u:%u]", desc.count, desc.cbuf_index,
+                             desc.cbuf_offset);
+            }
+            std::fprintf(stderr, "\n");
         }
     }
 }
