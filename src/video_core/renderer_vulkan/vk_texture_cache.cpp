@@ -283,12 +283,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // decode, so streamed textures are ready the frame they are first used instead of seconds later.
 [[nodiscard]] bool WillUseGpuBcnTranscode(const Device& device, const ImageInfo& info) {
     if (!IsPixelFormatASTC(info.format) || device.IsOptimalAstcSupported() ||
-        IsHugeAstcArray(device, info) || info.type != ImageType::e2D || info.size.depth != 1 ||
-        info.resources.layers > 1) {
-        return false;
-    }
-    const u64 texels = u64{info.size.width} * info.size.height;
-    if (texels > 2048U * 2048U) {
+        IsHugeAstcArray(device, info) || info.type != ImageType::e2D || info.size.depth != 1) {
         return false;
     }
     return Settings::values.accelerate_astc.GetValue() == Settings::AstcDecodeMode::Gpu &&
@@ -4141,17 +4136,36 @@ void TextureCacheRuntime::AccelerateImageUpload(
 void TextureCacheRuntime::AccelerateImageUploadLayers(
     Image& image, const StagingBufferRef& map,
     std::span<const VideoCommon::SwizzleParameters> swizzles, std::span<const u32> layers) {
+    if (IsPixelFormatASTC(image.info.format) && bc_encoder_pass && WillUseGpuBcnTranscode(device, image.info)) {
+        return TranscodeAstcToBcn(image, map, swizzles, layers);
+    }
     astc_decoder_pass->AssembleLayers(image, map, swizzles, layers);
 }
 
 void TextureCacheRuntime::TranscodeAstcToBcn(
     Image& image, const StagingBufferRef& map,
-    std::span<const VideoCommon::SwizzleParameters> swizzles) {
+    std::span<const VideoCommon::SwizzleParameters> swizzles,
+    std::span<const u32> target_layers) {
     const ImageInfo& info = image.info;
     const u32 width = info.size.width;
     const u32 height = info.size.height;
-    const u32 levels = static_cast<u32>(info.resources.levels);
-    const u32 layers = static_cast<u32>(info.resources.layers);
+    const u32 skip = image.host_level_offset;
+    const u32 host_levels = static_cast<u32>(info.resources.levels) - skip;
+    const u32 host_width = (std::max)(width >> skip, 1U);
+    const u32 host_height = (std::max)(height >> skip, 1U);
+
+    const bool has_target_layers = !target_layers.empty();
+    const u32 num_layers = has_target_layers ? static_cast<u32>(target_layers.size())
+                                            : static_cast<u32>(info.resources.layers);
+
+    boost::container::small_vector<u32, 16> local_layers;
+    if (!has_target_layers) {
+        local_layers.resize(num_layers);
+        std::iota(local_layers.begin(), local_layers.end(), 0U);
+    }
+    const std::span<const u32> effective_layers = has_target_layers ? target_layers
+                                                                    : std::span<const u32>{local_layers};
+
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
         pending_transcodes.pop_front();
     }
@@ -4159,6 +4173,9 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         scheduler.Wait(pending_transcodes.front().tick);
         pending_transcodes.pop_front();
     }
+
+    TransitionImageLayout(image);
+
     constexpr VkFormat DecodeFormat = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
     PendingTranscode pending{
         .tick = 0,
@@ -4168,9 +4185,9 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .flags = 0,
             .imageType = VK_IMAGE_TYPE_2D,
             .format = DecodeFormat,
-            .extent = {width, height, 1},
-            .mipLevels = levels,
-            .arrayLayers = layers,
+            .extent = {host_width, host_height, 1},
+            .mipLevels = host_levels,
+            .arrayLayers = num_layers,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = VK_IMAGE_USAGE_STORAGE_BIT,
@@ -4181,58 +4198,101 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         }, true),
         .views = {},
     };
-    for (u32 level = 0; level < levels; ++level) {
+
+    for (u32 level = 0; level < host_levels; ++level) {
         pending.views.push_back(
-            MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
+            MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat, 0, num_layers));
     }
+
+    const size_t layer_views_base = pending.views.size();
+    if (has_target_layers && num_layers > 1) {
+        for (u32 level = 0; level < host_levels; ++level) {
+            for (u32 i = 0; i < num_layers; ++i) {
+                pending.views.push_back(
+                    MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat, i, 1));
+            }
+        }
+    }
+
     astc_decoder_pass->AssembleInto(
-        info, 0, image.guest_size_bytes,
+        info, skip, image.guest_size_bytes,
         ASTCDecoderPass::Target{
             .image = *pending.image,
             .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
             .initialized = false,
             .level_view = [&pending](s32 level) { return *pending.views[level]; },
             .wait = true,
+            .layers = effective_layers,
+            .layer_view = [&pending, layer_views_base, num_layers, &effective_layers](s32 level, u32 layer) {
+                if (num_layers <= 1 || layer_views_base == pending.views.size()) {
+                    return *pending.views[level];
+                }
+                for (u32 k = 0; k < num_layers; ++k) {
+                    if (effective_layers[k] == layer) {
+                        return *pending.views[layer_views_base + level * num_layers + k];
+                    }
+                }
+                return *pending.views[level];
+            },
         },
         map, swizzles);
 
-    // Encode each level into a staging buffer, then copy it into the image.
     const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
                      Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
     const u64 block_bytes = bc3 ? 16 : 8;
-    for (u32 level = 0; level < levels; ++level) {
-        const u32 level_width = (std::max)(width >> level, 1U);
-        const u32 level_height = (std::max)(height >> level, 1U);
+
+    for (u32 level = 0; level < host_levels; ++level) {
+        const u32 level_width = (std::max)(host_width >> level, 1U);
+        const u32 level_height = (std::max)(host_height >> level, 1U);
         const u32 blocks_x = Common::DivCeil(level_width, 4U);
         const u32 blocks_y = Common::DivCeil(level_height, 4U);
-        const u64 size = u64{blocks_x} * blocks_y * layers * block_bytes;
-        const auto output = staging_buffer_pool.Request(size, MemoryUsage::DeviceLocal);
-        bc_encoder_pass->Encode(*pending.views[level], level_width, level_height, layers, bc3,
-                                output.buffer, output.offset, size, 0);
-        scheduler.Record([](vk::CommandBuffer cmdbuf) {
-            const VkMemoryBarrier barrier{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                .pNext = nullptr,
-                .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            };
-            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, barrier);
-        });
-        const BufferImageCopy copy{
-            .buffer_offset = 0,
-            .buffer_size = size,
-            .buffer_row_length = blocks_x * 4,
-            .buffer_image_height = blocks_y * 4,
-            .image_subresource{
-                .base_level = static_cast<s32>(level),
-                .base_layer = 0,
-                .num_layers = static_cast<s32>(layers),
-            },
-            .image_offset{0, 0, 0},
-            .image_extent{level_width, level_height, 1},
-        };
-        image.UploadMemory(output.buffer, output.offset, std::span{&copy, 1});
+        const u64 layer_bytes = u64{blocks_x} * blocks_y * block_bytes;
+        const u32 max_layers_batch = layer_bytes > 0 ? (std::max<u32>)(1U, static_cast<u32>((16ULL << 20) / layer_bytes)) : num_layers;
+
+        for (u32 batch_start = 0; batch_start < num_layers; batch_start += max_layers_batch) {
+            const u32 batch_count = (std::min)(max_layers_batch, num_layers - batch_start);
+            const u64 batch_size = layer_bytes * batch_count;
+            const auto output = staging_buffer_pool.Request(batch_size, MemoryUsage::DeviceLocal);
+
+            VkImageView enc_view = *pending.views[level];
+            if (batch_count != num_layers || batch_start != 0) {
+                pending.views.push_back(
+                    MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat, batch_start, batch_count));
+                enc_view = *pending.views.back();
+            }
+
+            bc_encoder_pass->Encode(enc_view, level_width, level_height, batch_count, bc3,
+                                    output.buffer, output.offset, batch_size, 0);
+            scheduler.Record([](vk::CommandBuffer cmdbuf) {
+                const VkMemoryBarrier barrier{
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                    .pNext = nullptr,
+                    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                };
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, barrier);
+            });
+
+            boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
+            copies.reserve(batch_count);
+            for (u32 k = 0; k < batch_count; ++k) {
+                copies.push_back({
+                    .buffer_offset = k * layer_bytes,
+                    .buffer_size = layer_bytes,
+                    .buffer_row_length = blocks_x * 4,
+                    .buffer_image_height = blocks_y * 4,
+                    .image_subresource{
+                        .base_level = static_cast<s32>(level),
+                        .base_layer = static_cast<s32>(effective_layers[batch_start + k]),
+                        .num_layers = 1,
+                    },
+                    .image_offset{0, 0, 0},
+                    .image_extent{level_width, level_height, 1},
+                });
+            }
+            image.UploadMemory(output.buffer, output.offset, copies);
+        }
     }
     pending.tick = scheduler.CurrentTick();
     pending_transcodes.push_back(std::move(pending));

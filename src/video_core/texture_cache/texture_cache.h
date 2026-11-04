@@ -1393,17 +1393,28 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     }
     image.dirty_layers.clear();
 
-    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
-        LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
-                    (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
-        runtime.TransitionImageLayout(image);
-        return;
-    }
-
     if (True(image.flags & ImageFlagBits::Unbacked)) {
         // Nothing to upload into (and staging it could take tens of GB).
         runtime.TransitionImageLayout(image);
         return;
+    }
+
+    const u32 num_layers = static_cast<u32>(image.info.resources.layers);
+    if (num_layers > 1 && (MapSizeBytes(image) > 16_MiB || image.guest_size_bytes > 16_MiB)) {
+        std::vector<u32> all_layers(num_layers);
+        std::iota(all_layers.begin(), all_layers.end(), 0U);
+        UploadLayers(image, all_layers);
+        runtime.InsertUploadMemoryBarrier();
+        return;
+    }
+
+    if (image.guest_size_bytes > 64_MiB || MapSizeBytes(image) > 64_MiB) {
+        if (False(image.flags & ImageFlagBits::AcceleratedUpload)) {
+            LOG_WARNING(HW_GPU, "Skipping upload of huge {} MiB image {:#x}; transitioning layout",
+                        (std::max)(image.guest_size_bytes, MapSizeBytes(image)) >> 20, image.gpu_addr);
+            runtime.TransitionImageLayout(image);
+            return;
+        }
     }
 
     if (image.info.num_samples > 1 && !runtime.CanUploadMSAA()) {

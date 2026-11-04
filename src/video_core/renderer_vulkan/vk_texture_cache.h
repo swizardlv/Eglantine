@@ -180,7 +180,8 @@ public:
     /// ASTC decoded on the GPU and re-compressed to BC1/BC3 there (accelerate_astc=Gpu with
     /// astc_recompression=Bc1/Bc3): decode into a temporary RGBA8 image, encode, copy.
     void TranscodeAstcToBcn(Image& image, const StagingBufferRef& map,
-                            std::span<const VideoCommon::SwizzleParameters> swizzles);
+                            std::span<const VideoCommon::SwizzleParameters> swizzles,
+                            std::span<const u32> target_layers = {});
 
     /// Temporary decode images, freed once the GPU is past `tick`.
     struct PendingTranscode {
