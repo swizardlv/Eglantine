@@ -15,6 +15,7 @@
 
 #include "common/common_types.h"
 #include "common/div_ceil.h"
+#include "shader_recompiler/backend/nvn_storage_descriptor.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 
