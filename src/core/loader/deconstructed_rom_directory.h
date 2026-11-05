@@ -19,6 +19,9 @@ class System;
 
 namespace Loader {
 
+/// The display version of a dump without control data, from its RomFS.
+std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir);
+
 /**
  * This class loads a "deconstructed ROM directory", which are the typical format we see for Switch
  * game dumps. The path should be a "main" NSO, which must be in a directory that contains the other

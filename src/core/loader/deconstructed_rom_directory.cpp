@@ -128,6 +128,8 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     return nullptr;
 }
 
+} // namespace
+
 // The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
 // their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
 // Kart World 1.8.0). A hotfix can keep its minor version's tables (Product.110 in a 1.1.1).
@@ -161,6 +163,8 @@ std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
     }
     return fmt::format("{}.{}.{}", best[0], best[1], best[2]);
 }
+
+namespace {
 
 // Loose ExeFS dumps carry no control data, but icon/nacp sidecars can be dropped next to the
 // ExeFS or in the game folder above it (<game>/exefs/main, <game>/base/exefs/main and

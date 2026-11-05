@@ -61,6 +61,14 @@ std::unique_ptr<FileSys::NACP> BuildNacp(const NupContainer::PackageInfo& base,
     auto nacp = std::make_unique<FileSys::NACP>();
     nacp->raw.supported_languages = static_cast<FileSys::SupportedLanguage>(0x3FFFF);
 
+    for (std::size_t i = 0; i < 16; ++i) {
+        if (!effective_title.empty()) {
+            CopyNameToEntry(nacp->raw.language_entries.language_entries[i], effective_title);
+        }
+        if (!base.publisher.empty()) {
+            CopyDeveloperToEntry(nacp->raw.language_entries.language_entries[i], base.publisher);
+        }
+    }
     for (const auto& [lang, name] : base.localized_titles) {
         for (const auto& slot : LanguageSlots) {
             // The uncompressed RawNACP only stores 16 entries; Polish/Thai exist
@@ -69,12 +77,6 @@ std::unique_ptr<FileSys::NACP> BuildNacp(const NupContainer::PackageInfo& base,
                 CopyNameToEntry(nacp->raw.language_entries.language_entries[slot.index], name);
             }
         }
-    }
-    if (!effective_title.empty()) {
-        CopyNameToEntry(nacp->raw.language_entries.language_entries[0], effective_title);
-    }
-    if (!base.publisher.empty()) {
-        CopyDeveloperToEntry(nacp->raw.language_entries.language_entries[0], base.publisher);
     }
     if (!version.empty()) {
         const std::size_t length = std::min(version.size(), nacp->raw.version_string.size() - 1);
@@ -139,13 +141,15 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
     }
     secondary_loader = std::make_unique<AppLoader_DeconstructedRomDirectory>(exefs, true);
 
-    if (update_index) {
-        const auto& update = nup->GetPackages()[*update_index];
-        display_version = update.display_version.empty() ? DecodeVersion(update.version)
-                                                         : update.display_version;
-    } else {
-        display_version = program.display_version.empty() ? DecodeVersion(program.version)
-                                                          : program.display_version;
+    const auto active_index = update_index ? *update_index : *program_index;
+    const auto& active_pkg = nup->GetPackages()[active_index];
+    display_version = active_pkg.display_version;
+    if (display_version.empty()) {
+        const auto romfs = nup->GetRomFSDir(active_index);
+        display_version = RomFSProductVersion(romfs);
+    }
+    if (display_version.empty()) {
+        display_version = DecodeVersion(active_pkg.version);
     }
     nacp_file = BuildNacp(program, display_version);
     if (!program.icon.empty()) {
@@ -213,6 +217,10 @@ ResultStatus AppLoader_NUP::VerifyIntegrity(
 }
 
 ResultStatus AppLoader_NUP::ReadRomFS(FileSys::VirtualFile& out_file) {
+    if (cached_romfs != nullptr) {
+        out_file = cached_romfs;
+        return ResultStatus::Success;
+    }
     const auto base_index = nup->FindBasePackage();
     const auto base_romfs = base_index ? nup->GetRomFSDir(*base_index) : FileSys::VirtualDir{};
     const auto update_index = nup->FindBestUpdatePackage();
@@ -224,10 +232,11 @@ ResultStatus AppLoader_NUP::ReadRomFS(FileSys::VirtualFile& out_file) {
     if (merged == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }
-    out_file = FileSys::CreateRomFS(merged);
-    if (out_file == nullptr) {
+    cached_romfs = FileSys::CreateRomFS(merged);
+    if (cached_romfs == nullptr) {
         return ResultStatus::ErrorNoRomFS;
     }
+    out_file = cached_romfs;
     return ResultStatus::Success;
 }
 
@@ -277,6 +286,14 @@ ResultStatus AppLoader_NUP::ReadControlData(FileSys::NACP& control) {
     }
     control = *nacp_file;
     return ResultStatus::Success;
+}
+
+ResultStatus AppLoader_NUP::ReadDisplayVersion(std::string& version) {
+    if (!display_version.empty()) {
+        version = display_version;
+        return ResultStatus::Success;
+    }
+    return ResultStatus::ErrorNoControl;
 }
 
 ResultStatus AppLoader_NUP::ReadNSOModules(Modules& modules) {

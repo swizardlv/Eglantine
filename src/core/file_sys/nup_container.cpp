@@ -134,7 +134,7 @@ public:
                std::size_t cache_index_)
         : backing(std::move(backing_)), extent_offset(extent_offset_), extent_size(extent_size_),
           uncompressed_size(uncompressed_size_), name(std::move(name_)), cache(std::move(cache_)),
-          cache_index(cache_index_), cache_enabled(uncompressed_size <= NupDecompressCache::DecompressCacheCap) {}
+          cache_index(cache_index_), cache_enabled(uncompressed_size <= 32 * 1024 * 1024) {}
 
     std::string GetName() const override {
         return name;
