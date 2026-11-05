@@ -572,6 +572,7 @@ void GlobalMemoryToStorageBufferPass(IR::Program& program, const HostTranslateIn
 }
 
 void JoinStorageInfo(Info& base, Info& source) {
+    base.native_global_bounds |= source.native_global_bounds;
     auto& descriptors = base.storage_buffers_descriptors;
     for (auto& desc : source.storage_buffers_descriptors) {
         auto it{std::ranges::find_if(descriptors, [&desc](const auto& existing) {
