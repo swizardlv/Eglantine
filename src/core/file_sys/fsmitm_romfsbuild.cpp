@@ -209,8 +209,11 @@ bool RomFSBuildContext::LoadFromCache(VirtualFile cache_file) {
     std::fflush(stderr);
 
     std::unordered_map<std::string, std::shared_ptr<RomFSBuildDirectoryContext>> dir_map;
+    std::unordered_map<std::string, VirtualDir> vfs_dir_map;
     dir_map[""] = root;
     dir_map["/"] = root;
+    vfs_dir_map[""] = base;
+    vfs_dir_map["/"] = base;
 
     std::size_t pos = 15;
     while (pos < content.size()) {
@@ -237,6 +240,13 @@ bool RomFSBuildContext::LoadFromCache(VirtualFile cache_file) {
 
             if (!AddDirectory(parent, child)) continue;
             dir_map[std::string(dir_path)] = child;
+
+            auto vfs_it = vfs_dir_map.find(parent_path);
+            VirtualDir child_vfs = nullptr;
+            if (vfs_it != vfs_dir_map.end() && vfs_it->second != nullptr) {
+                child_vfs = vfs_it->second->GetSubdirectory(name);
+            }
+            vfs_dir_map[std::string(dir_path)] = child_vfs;
         } else if (line.starts_with("F ")) {
             const auto first_space = line.find(' ', 2);
             if (first_space == std::string_view::npos) continue;
@@ -254,19 +264,30 @@ bool RomFSBuildContext::LoadFromCache(VirtualFile cache_file) {
             if (it == dir_map.end()) continue;
             auto parent = it->second;
 
+            const auto rel_path = file_path.starts_with('/') ? file_path.substr(1) : file_path;
+            VirtualFile source = nullptr;
+            auto vfs_it = vfs_dir_map.find(parent_path);
+            if (vfs_it != vfs_dir_map.end() && vfs_it->second != nullptr) {
+                source = vfs_it->second->GetFile(name);
+            }
+            if (!source) {
+                source = base->GetFileWithKnownSize(rel_path, size);
+            }
+            if (!source) {
+                if (name.starts_with('.')) {
+                    continue;
+                }
+                std::fprintf(stderr, "[EglantinePS5] RomFS cache: file not found: %.*s\n",
+                             static_cast<int>(rel_path.size()), rel_path.data());
+                return false;
+            }
+
             auto child = std::make_shared<RomFSBuildFileContext>();
             child->cur_path_ofs = parent->path_len + 1;
             child->path_len = child->cur_path_ofs + static_cast<u32>(name.size());
             child->path = parent->path + "/" + std::string(name);
             child->size = size;
-
-            const auto rel_path = file_path.starts_with('/') ? file_path.substr(1) : file_path;
-            child->source = base->GetFileWithKnownSize(rel_path, size);
-            if (!child->source) {
-                std::fprintf(stderr, "[EglantinePS5] RomFS cache: file not found: %.*s\n",
-                             static_cast<int>(rel_path.size()), rel_path.data());
-                return false;
-            }
+            child->source = std::move(source);
 
             AddFile(parent, std::move(child));
         }

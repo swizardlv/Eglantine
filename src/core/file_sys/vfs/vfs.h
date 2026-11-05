@@ -217,7 +217,7 @@ public:
     // file with name.
     virtual VirtualFile GetFile(std::string_view name) const;
     virtual VirtualFile GetFileWithKnownSize(std::string_view name, u64 size) const {
-        return GetFile(name);
+        return GetFileRelative(name);
     }
 
     // Returns a struct containing the file's timestamp.

@@ -156,7 +156,12 @@ std::size_t ConcatenatedVfsFile::Read(u8* data, std::size_t length, std::size_t 
         const u64 map_offset = it->offset;
         const u64 file_size = file->GetSize();
 
-        if (cur_offset > map_offset + file_size) {
+        if (file_size == 0) {
+            it++;
+            continue;
+        }
+
+        if (cur_offset < map_offset || cur_offset >= map_offset + file_size) {
             // Entirely out of bounds read.
             break;
         }

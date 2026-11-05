@@ -139,7 +139,7 @@ AppLoader_NUP::AppLoader_NUP(FileSys::VirtualFile file_)
         LOG_ERROR(Loader, "NUP package has no usable ExeFS");
         return;
     }
-    secondary_loader = std::make_unique<AppLoader_DeconstructedRomDirectory>(exefs, true);
+    secondary_loader = std::make_unique<AppLoader_DeconstructedRomDirectory>(exefs, false);
 
     const auto active_index = update_index ? *update_index : *program_index;
     const auto& active_pkg = nup->GetPackages()[active_index];
