@@ -336,7 +336,11 @@ std::size_t RealVfsFile::GetSize() const {
         return *size;
     }
     auto lk = base.RefreshReference(path, perms, *reference);
-    return reference->file ? reference->file->GetSize() : 0;
+    const auto s = reference->file ? reference->file->GetSize() : 0;
+    if (!True(perms & OpenMode::Write)) {
+        size = s;
+    }
+    return s;
 }
 
 bool RealVfsFile::Resize(std::size_t new_size) {

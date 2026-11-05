@@ -10,6 +10,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "core/file_sys/vfs/vfs.h"
 
@@ -114,6 +115,8 @@ public:
     bool IsReadable() const override;
     std::string GetName() const override;
     VirtualDir GetParentDirectory() const override;
+    VirtualFile GetFile(std::string_view name) const override;
+    VirtualDir GetSubdirectory(std::string_view name) const override;
     bool DeleteSubdirectory(std::string_view subdir_name) override;
     bool DeleteFile(std::string_view file_name) override;
     bool Rename(std::string_view name) override;
@@ -124,8 +127,14 @@ public:
     virtual void AddDirectory(VirtualDir dir);
 
 private:
+    void EnsureIndex() const;
+
     std::vector<VirtualFile> files;
     std::vector<VirtualDir> dirs;
+
+    mutable std::unordered_map<std::string, VirtualFile> file_map;
+    mutable std::unordered_map<std::string, VirtualDir> dir_map;
+    mutable bool index_built{false};
 
     VirtualDir parent;
     std::string name;

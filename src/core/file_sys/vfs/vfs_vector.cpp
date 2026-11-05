@@ -94,6 +94,39 @@ VirtualDir VectorVfsDirectory::GetParentDirectory() const {
     return parent;
 }
 
+void VectorVfsDirectory::EnsureIndex() const {
+    if (index_built) {
+        return;
+    }
+    file_map.clear();
+    file_map.reserve(files.size());
+    for (const auto& f : files) {
+        if (f) {
+            file_map.emplace(f->GetName(), f);
+        }
+    }
+    dir_map.clear();
+    dir_map.reserve(dirs.size());
+    for (const auto& d : dirs) {
+        if (d) {
+            dir_map.emplace(d->GetName(), d);
+        }
+    }
+    index_built = true;
+}
+
+VirtualFile VectorVfsDirectory::GetFile(std::string_view name_) const {
+    EnsureIndex();
+    const auto it = file_map.find(std::string(name_));
+    return it != file_map.end() ? it->second : nullptr;
+}
+
+VirtualDir VectorVfsDirectory::GetSubdirectory(std::string_view name_) const {
+    EnsureIndex();
+    const auto it = dir_map.find(std::string(name_));
+    return it != dir_map.end() ? it->second : nullptr;
+}
+
 template <typename T>
 static bool FindAndRemoveVectorElement(std::vector<T>& vec, std::string_view name) {
     const auto iter =
@@ -106,10 +139,12 @@ static bool FindAndRemoveVectorElement(std::vector<T>& vec, std::string_view nam
 }
 
 bool VectorVfsDirectory::DeleteSubdirectory(std::string_view subdir_name) {
+    index_built = false;
     return FindAndRemoveVectorElement(dirs, subdir_name);
 }
 
 bool VectorVfsDirectory::DeleteFile(std::string_view file_name) {
+    index_built = false;
     return FindAndRemoveVectorElement(files, file_name);
 }
 
@@ -127,10 +162,16 @@ VirtualFile VectorVfsDirectory::CreateFile(std::string_view file_name) {
 }
 
 void VectorVfsDirectory::AddFile(VirtualFile file) {
+    if (index_built && file) {
+        file_map.emplace(file->GetName(), file);
+    }
     files.push_back(std::move(file));
 }
 
 void VectorVfsDirectory::AddDirectory(VirtualDir dir) {
+    if (index_built && dir) {
+        dir_map.emplace(dir->GetName(), dir);
+    }
     dirs.push_back(std::move(dir));
 }
 } // namespace FileSys

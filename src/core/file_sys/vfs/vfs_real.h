@@ -104,7 +104,7 @@ private:
     std::string path;
     std::string parent_path;
     std::vector<std::string> path_components;
-    std::optional<u64> size;
+    mutable std::optional<u64> size;
     OpenMode perms;
 };
 

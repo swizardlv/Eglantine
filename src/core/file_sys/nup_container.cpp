@@ -134,7 +134,8 @@ public:
                std::size_t cache_index_)
         : backing(std::move(backing_)), extent_offset(extent_offset_), extent_size(extent_size_),
           uncompressed_size(uncompressed_size_), name(std::move(name_)), cache(std::move(cache_)),
-          cache_index(cache_index_), cache_enabled(uncompressed_size <= 32 * 1024 * 1024) {}
+          cache_index(cache_index_),
+          cache_enabled(uncompressed_size <= NupDecompressCache::DecompressCacheCap) {}
 
     std::string GetName() const override {
         return name;
@@ -174,6 +175,14 @@ public:
             }
         }
 
+        {
+            std::scoped_lock lock{local_mutex};
+            if (!local_cache.empty()) {
+                std::memcpy(data, local_cache.data() + offset, length);
+                return length;
+            }
+        }
+
         // Miss: decompress without holding the lock, then publish and copy.
         std::vector<u8> scratch = Decompress();
         if (scratch.empty()) {
@@ -182,14 +191,21 @@ public:
         {
             std::scoped_lock lock{cache->mutex};
             if (cache_enabled) {
-                cache->Insert(cache_index, scratch);
+                cache->Insert(cache_index, std::move(scratch));
             }
             if (const auto* cached = cache->Find(cache_index)) {
                 std::memcpy(data, cached->data() + offset, length);
                 return length;
             }
         }
-        std::memcpy(data, scratch.data() + offset, length);
+
+        std::scoped_lock lock{local_mutex};
+        if (local_cache.empty() && !scratch.empty()) {
+            local_cache = std::move(scratch);
+            std::memcpy(data, local_cache.data() + offset, length);
+        } else if (!local_cache.empty()) {
+            std::memcpy(data, local_cache.data() + offset, length);
+        }
         return length;
     }
 
@@ -204,19 +220,19 @@ public:
 
 private:
     std::vector<u8> Decompress() const {
-        if (extent_size > backing->GetSize() || extent_offset > backing->GetSize() - extent_size) {
-            return {};
-        }
         const auto compressed = backing->ReadBytes(static_cast<std::size_t>(extent_size),
                                                    static_cast<std::size_t>(extent_offset));
         if (compressed.size() != extent_size) {
+            LOG_ERROR(Loader, "NUP backing read failed for {}: expected {} bytes, got {}",
+                      name, extent_size, compressed.size());
             return {};
         }
         std::vector<u8> out(static_cast<std::size_t>(uncompressed_size));
         const std::size_t result =
             ZSTD_decompress(out.data(), out.size(), compressed.data(), compressed.size());
         if (ZSTD_isError(result) || result != out.size()) {
-            LOG_ERROR(Loader, "NUP zstd decompression failed for {}", name);
+            LOG_ERROR(Loader, "NUP zstd decompression failed for {}: {}",
+                      name, ZSTD_getErrorName(result));
             return {};
         }
         return out;
@@ -230,6 +246,8 @@ private:
     std::shared_ptr<NupDecompressCache> cache;
     std::size_t cache_index;
     bool cache_enabled;
+    mutable std::mutex local_mutex;
+    mutable std::vector<u8> local_cache;
 };
 
 } // namespace
