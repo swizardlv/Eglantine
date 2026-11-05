@@ -30,6 +30,10 @@ public:
     [[nodiscard]] bool HasPendingChannels() const {
         return !pending_channels.empty();
     }
+    /// HasPendingChannels for threads other than the GPU thread.
+    [[nodiscard]] bool HasPendingChannelsAnyThread() const {
+        return any_pending.load(std::memory_order_acquire);
+    }
 
     void DeclareChannel(std::shared_ptr<ChannelState> new_channel);
 
@@ -39,6 +43,7 @@ private:
     ::Common::unordered_map<s32, std::shared_ptr<ChannelState>> channels;
     std::mutex scheduling_guard;
     std::vector<std::shared_ptr<ChannelState>> pending_channels; ///< Suspended on an acquire
+    std::atomic<bool> any_pending{};
 };
 
 } // namespace Control
