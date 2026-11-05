@@ -70,9 +70,9 @@ struct PackageRecord {
     u8 kind;
     u8 flags;
     u16_le reserved;
+    u32_le reserved2;
     u64_le meta_offset;
     u32_le meta_size;
-    u32_le reserved2;
     std::array<u8, 20> reserved3;
 };
 static_assert(sizeof(PackageRecord) == PackageRecordSize);
@@ -89,15 +89,14 @@ static_assert(sizeof(DirRecord) == DirRecordSize);
 struct FileRecord {
     u32_le name_offset;
     u32_le name_length;
-    u32_le reserved;
     u64_le size;
-    std::array<u8, 0x20> sha256;
     u64_le extent_offset;
     u64_le extent_size;
+    std::array<u8, 0x20> sha256;
     u8 codec;
     u8 codec_flags;
-    u16_le reserved2;
-    std::array<u8, 8> reserved3;
+    u16_le reserved;
+    std::array<u8, 12> reserved2;
 };
 static_assert(sizeof(FileRecord) == FileRecordSize);
 
