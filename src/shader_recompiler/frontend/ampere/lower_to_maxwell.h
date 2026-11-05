@@ -956,7 +956,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 coordinate = insn.Bits(24, 8), handle = insn.Bits(64, 8);
             const u32 channels = insn.Bits(72, 4), dimension = insn.Bits(61, 3);
             const u32 count = static_cast<u32>(std::popcount(channels));
-            const u32 reserved = uses_uniform_bank ? high_uniform_base : 246U;
+            const u32 reserved = uses_uniform_bank ? 216U : 246U;
             if ((insn.words[1] & ~(store ? 0xe00000ffU : 0xe0000000U)) ||
                 (insn.words[2] & ~0xfffU) != (store ? 0x00100000U : 0x001e0000U) ||
                 (insn.words[3] & 0xc00001ffU) || dimension < 3 || dimension > 5 ||
