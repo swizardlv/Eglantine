@@ -35,6 +35,7 @@ constexpr u32 Gf100BindValidMask =  0x1f0000 | Gf100BindClassMask;
 
 // Reads a semaphore word as the GPU sees it: a release a fence holds for the guest CPU counts, and
 // a GPU-written copy is flushed out of the buffer cache first.
+u32 ReadSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address) {
     const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
     if (device && dma_pusher.rasterizer->MustFlushRegion(*device, sizeof(u32),
                                                          VideoCommon::CacheType::BufferCache)) {
