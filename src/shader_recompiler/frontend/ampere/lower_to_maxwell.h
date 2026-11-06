@@ -312,6 +312,22 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             emit(base(0x5c18000000000000ULL) | (u64{251} << 8) |
                  (u64{250} << 20) | (u64{16} << 39));
         };
+        // Low 32 bits of (low:high) >> shift (upstream zortos/nx2): the two halves are
+        // shifted separately and combined with predicated selects around the 32 boundary.
+        const auto right_shift_u64_low = [&](u32 target, u32 low, u32 high, u32 shift) {
+            mov_imm(250, 32);
+            emit(0x5c10000000000000ULL | predicate | 251 | (u64{250} << 8) |
+                 (u64{shift} << 20) | (u64{1} << 48));
+            emit(0x5c28000000000000ULL | predicate | 250 | (u64{low} << 8) | (u64{shift} << 20));
+            emit(0x5c48000000000000ULL | predicate | 251 | (u64{high} << 8) | (u64{251} << 20));
+            emit(0x5c40000000000000ULL | predicate | 250 | (u64{250} << 8) |
+                 (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
+            emit(0x1c00000000000000ULL | predicate | 251 | (u64{shift} << 8) |
+                 (u64{0xffffffe0U} << 20));
+            emit(0x5c28000000000000ULL | predicate | 251 | (u64{high} << 8) | (u64{251} << 20));
+            emit(0x5c40000000000000ULL | predicate | target | (u64{250} << 8) |
+                 (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
+        };
         switch (opcode) {
         case 0x304: { // F2F.F16.F32, scalar round-to-nearest conversion.
             if (insn.words[2] != 0x00200800 || insn.Bits(24, 8) ||
@@ -491,6 +507,20 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             if (insn.Bits(24, 8) == 255 && insn.words[1] == 255 &&
                 (insn.words[2] & ~0xffU) == 0x078e0000) {
                 emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.Bits(64, 8)} << 20));
+                break;
+            }
+            if (insn.Bits(24, 8) == 255 && insn.words[1] == 255 && (insn.words[2] & ~0x07800affU) == 0x000e0400 &&
+                (!rewritten_uniform || insn.Bits(87, 3) == 7)) {
+                // IMAD.X RZ, RZ, c, Pn: the high word of a 64-bit add (bit 75 inverts c).
+                u32 c = insn.Bits(64, 8);
+                mov_imm(250, 1);
+                emit(0x5ca0000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{255} << 20) |
+                     (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42));
+                if (insn.Bits(75, 1)) {
+                    emit(0x0400000000000000ULL | predicate | 251 | (u64{c} << 8) | (u64{0xffffffffU} << 20) | (u64{2} << 53));
+                    c = 251;
+                }
+                emit(base(0x5c10000000000000ULL) | (u64{c} << 8) | (u64{250} << 20));
                 break;
             }
             if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (insn.words[1] & ~0xffU))
@@ -795,27 +825,38 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         }
         case 0x899: { // USHF.L.U32; accept a zero word outside the selected half.
             const u32 dst = insn.Bits(16, 8), low = insn.Bits(24, 8), high = insn.Bits(64, 8);
-            if (insn.words[2] == (0x08011400U | high) && low == 63 && high < 16 &&
-                dst < 28 && native_predicate == 7 && insn.words[1] <= 32) {
-                emit(0x3828000000000000ULL | predicate | (dst + 216) |
-                     (u64{high + 216} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
+            const u32 dst_reg = uniform_register(dst), low_reg = uniform_register(low);
+            const u32 high_reg = uniform_register(high);
+            const bool dst_ok = dst != 63 && dst_reg != ~0U;
+            const bool low_ok = low != 63 && low_reg != ~0U, high_ok = high != 63 && high_reg != ~0U;
+            if (dst_ok && low_reg != ~0U && high_reg != ~0U &&
+                insn.words[2] == (0x08001200U | high)) {
+                mov_imm(252, insn.words[1]);
+                right_shift_u64_low(dst_reg, low_reg, high_reg, 252);
+                break;
+            }
+            // A UPn guard (Hyrule Warriors: @UP1 USHF.R.U32.HI) is swapped into the predicate above.
+            if (insn.words[2] == (0x08011400U | high) && low == 63 && high_ok &&
+                dst_ok && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg |
+                     (u64{high_reg} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
                 break;
             }
             // Logical right shifts of one register (bit 76 right, bit 80 high word, bits 73-74
             // U32): USHF.R.U32 URd, URa, n, URZ and USHF.R.U32.HI URd, URZ, n, URb.
-            const bool right_low = insn.words[2] == 0x0800163f && low < 16;
-            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high < 16;
-            if ((right_low || right_high) && dst < 28 && native_predicate == 7 && insn.words[1] <= 32) {
-                emit(0x3828000000000000ULL | predicate | (dst + 216) |
-                     (u64{(right_high ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
+            const bool right_low = insn.words[2] == 0x0800163f && low_ok;
+            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high_ok;
+            if ((right_low || right_high) && dst_ok && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg |
+                     (u64{right_high ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
                 break;
             }
-            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high < 16;
-            const bool low_result = insn.words[2] == 0x0800063f && low < 16;
-            if (dst >= 28 || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
+            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high_ok;
+            const bool low_result = insn.words[2] == 0x0800063f && low_ok;
+            if (!dst_ok || insn.words[1] > 32 || (!high_result && !low_result))
                 return fail(index, "native uniform shift mode");
-            emit(0x3848000000000000ULL | predicate | (dst + 216) |
-                 (u64{(high_result ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
+            emit(0x3848000000000000ULL | predicate | dst_reg |
+                 (u64{high_result ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
             break;
         }
         case 0xb82: { // LDC indexed byte offset; bits 78-79 the mode as Maxwell's (2 = IS)
@@ -950,25 +991,29 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                  (u64{insn.Bits(63, 1)} << 40));
             break;
         }
-        case 0x3a1: { // MATCH.ALL.U64 with only the all-equal predicate retained.
+        case 0x3a1: { // MATCH.ALL (.U32, or .U64 on bit 73) with only the all-equal predicate retained.
             const u32 source = insn.Bits(24, 8), target = insn.Bits(81, 3);
-            if (dest != 255 || source >= 254 || (source & 1) || target >= 6 ||
-                native_predicate != 7 || insn.words[1] || (insn.words[2] & ~0xe0000U) != 0x200)
+            const u32 words = insn.Bits(73, 1) ? 2 : 1;
+            const u32 scratch = target == 6 ? 5U : 6U; // the comparison, saved around the match
+            if (dest != 255 || source >= 254 || (words == 2 && (source & 1)) || target == 7 ||
+                native_predicate != 7 || insn.words[1] || (insn.words[2] & ~0xe0200U) != 0)
                 return fail(index, "native warp match mode");
-            save_predicate();
+            save_predicate(1U << scratch);
+            // Compare every lane with the lowest active one, then require all to agree.
             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
             emit(0x5c10000000070000ULL | 251 | (u64{250} << 8) | (u64{255} << 20) | (u64{1} << 49));
             emit(0x5c40000000070000ULL | 250 | (u64{250} << 8) | (u64{251} << 20) | (u64{7} << 48));
             emit(0x5c30000000070000ULL | 250 | (u64{250} << 20));
-            for (u32 word = 0; word < 2; ++word)
+            for (u32 word = 0; word < words; ++word)
                 emit(0xef10000000070000ULL | (251 + word) | (u64{source + word} << 8) |
                     (u64{250} << 20) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
-            emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source} << 8) |
+            emit(0x5b60000000070000ULL | 7 | (u64{scratch} << 3) | (u64{source} << 8) |
                 (u64{251} << 20) | (u64{7} << 39) | (u64{2} << 49));
-            emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source + 1} << 8) |
-                (u64{252} << 20) | (u64{6} << 39) | (u64{2} << 49));
-            emit(0x50d8000000070000ULL | 255 | (u64{6} << 39) | (u64{target} << 45));
-            restore_predicate();
+            if (words == 2)
+                emit(0x5b60000000070000ULL | 7 | (u64{scratch} << 3) | (u64{source + 1} << 8) |
+                    (u64{252} << 20) | (u64{scratch} << 39) | (u64{2} << 49));
+            emit(0x50d8000000070000ULL | 255 | (u64{scratch} << 39) | (u64{target} << 45));
+            restore_predicate(1U << scratch);
             break;
         }
         case 0x3c4: { // REDUX.SUM (modulo 2^32), .MIN/.MAX (unsigned), .OR or .XOR over the actual active lanes.
