@@ -760,7 +760,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         case 0x899: { // USHF.L.U32; accept a zero word outside the selected half.
             const u32 dst = insn.Bits(16, 8), low = insn.Bits(24, 8), high = insn.Bits(64, 8);
             if (insn.words[2] == (0x08011400U | high) && low == 63 && high < 16 &&
-                dst < 16 && native_predicate == 7 && insn.words[1] <= 32) {
+                dst < 28 && native_predicate == 7 && insn.words[1] <= 32) {
                 emit(0x3828000000000000ULL | predicate | (dst + 216) |
                      (u64{high + 216} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
                 break;
@@ -769,14 +769,14 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             // U32): USHF.R.U32 URd, URa, n, URZ and USHF.R.U32.HI URd, URZ, n, URb.
             const bool right_low = insn.words[2] == 0x0800163f && low < 16;
             const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high < 16;
-            if ((right_low || right_high) && dst < 16 && native_predicate == 7 && insn.words[1] <= 32) {
+            if ((right_low || right_high) && dst < 28 && native_predicate == 7 && insn.words[1] <= 32) {
                 emit(0x3828000000000000ULL | predicate | (dst + 216) |
                      (u64{(right_high ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
                 break;
             }
             const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high < 16;
             const bool low_result = insn.words[2] == 0x0800063f && low < 16;
-            if (dst >= 16 || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
+            if (dst >= 28 || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
                 return fail(index, "native uniform shift mode");
             emit(0x3848000000000000ULL | predicate | (dst + 216) |
                  (u64{(high_result ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
@@ -1552,7 +1552,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 insn.Bits(76, 14) || insn.Bits(91, 1) || (insn.Bits(54, 5) != 2 && insn.Bits(54, 5) != 0) ||
                 insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
-            result.required_texture_buffer = 2;
+            result.required_texture_buffer = insn.Bits(54, 5);
             emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49));
@@ -2290,7 +2290,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 }
                 break;
             }
-            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) || insn.Bits(81, 3) != 7 ||
+            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) || (insn.Bits(81, 3) != 7 && insn.Bits(81, 3) != 0) ||
                 (opcode == 0x211 && insn.Bits(62, 1))) return fail(index, "native LEA carry/high mode");
             // 0x211 bit 63 negates Rb (LEA Rd, Ra, -Rb, s), as Maxwell ISCADD's bit 48.
             u32 b = insn.Bits(32, 8);
