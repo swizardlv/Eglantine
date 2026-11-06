@@ -304,6 +304,7 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
+            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -368,6 +369,16 @@ private:
     void GetCount33(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gpu TIPC 33 [2]={:#x}, returning 1", ctx.CommandBuffer()[2]);
         TipcReplyWords(ctx, {1});
+    }
+
+    // 41 (Switch 2 GpuSession CreateGraphicsDevice): NvRm passes the NvRm/GPu magic in
+    // words 2-3. The graphics device is this GPU session itself: it serves the
+    // KUserWorkerSession commands (101/102/211-216) the device uses for GPU memory and job
+    // submission, so hand back a session on this object (same as OpenSubSession gpu 22).
+    void CreateGraphicsDevice(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        LOG_INFO(Service, "nx2:gpu TIPC 41 CreateGraphicsDevice magic {:#x} {:#x}", w[2], w[3]);
+        ReturnRawSession(system, ctx, shared_from_this());
     }
 
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
@@ -2422,6 +2433,7 @@ public:
             {423, &INx2GraphicsSystemSession::BindNativeGpuMemory, "BindNativeGpuMemory"},
             {429, &INx2GraphicsSystemSession::CreateNativeImage, "CreateNativeImage"},
             {430, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyNativeImage"},
+            {434, &INx2GraphicsSystemSession::ExistsAddressSpace, "ExistsAddressSpace"},
             {426, &INx2GraphicsSystemSession::QueryNativeImage, "MapNativeImage"},
             {428, &INx2GraphicsSystemSession::QueryNativeImage, "QueryNativeImage"},
             {435, &INx2GraphicsSystemSession::CalculateNativeImageSize, "CalculateNativeImageSize"},
@@ -2719,6 +2731,18 @@ private:
         }
         LOG_INFO(Service, "nx2:gsv {} bind native memory {} at {:#x}+{:#x}", command, id, address,
                  size);
+    }
+
+    // 434 (Switch 2 Gpu ExistsAddressSpace): the game asks whether a GPU address space
+    // exists for a GPU address (Yoshi passes 0xf8000000). The emulator identity-maps GPU VA
+    // to CPU VA over [0x8000000, 0xC000000000), so any address in that range exists; answer
+    // true. Returning empty success made the game treat the address space as missing and
+    // dereference a null device/address-space struct (UserlandAssert 0x2a2).
+    void ExistsAddressSpace(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        LOG_INFO(Service, "nx2:gsv 434 ExistsAddressSpace [1]={:#x} [2]={:#x} addr={:#x} [8]={:#x}",
+                 w[1], w[2], w[7], w[8]);
+        TipcReplyWords(ctx, {1});
     }
 
     // 429(preference[16], u32 count, u32 memory id): result, u32 native image id.
