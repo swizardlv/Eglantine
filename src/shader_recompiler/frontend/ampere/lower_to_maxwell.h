@@ -497,7 +497,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 c = insn.Bits(64, 8);
             const u32 c_low = uniform_register(c), c_high = c == 63 ? 255U : uniform_register(c + 1);
             const u32 d_low = uniform_register(insn.Bits(16, 8)), d_high = uniform_register(insn.Bits(16, 8) + 1);
-            if (native_predicate != 7 || (insn.words[1] & ~0xffU) || (insn.words[2] & ~0xffU) != 0x0f8e0000 ||
+            if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0xffU) != 0x0f8e0000 ||
                 (insn.Bits(16, 8) & 1) || (c != 63 && (c & 1)) || a == ~0U || b == ~0U || c_low == ~0U ||
                 c_high == ~0U || d_low == ~0U || d_high == ~0U || d_low == 255)
                 return fail(index, "native uniform wide multiply mode");
@@ -506,15 +506,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             xmad(251, a, b, 250, true, false, 2, false);
             xmad(250, a, b, 251, false, true, 1, false);
             xmad(252, a, b, 251, true, true, 2, false);
-            emit(0x3828000000070000ULL | 250 | (u64{250} << 8) | (u64{16} << 20));
-            emit(0x5c10000000070000ULL | 253 | (u64{250} << 8) | (u64{252} << 20));
+            emit(0x3828000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000000000ULL | predicate | 253 | (u64{250} << 8) | (u64{252} << 20));
             xmad(250, a, b, 255, false, false, 0, false);
             xmad(251, a, b, 255, true, false, 0, false);
             xmad(251, a, b, 251, false, true, 0, false);
-            emit(0x5c18000000070000ULL | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
-            emit(0x5c10000000070000ULL | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
-            emit(0x5c10000000070000ULL | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
-            emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
+            emit(0x5c18000000000000ULL | predicate | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
+            emit(0x5c10000000000000ULL | predicate | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            emit(0x5c10000000000000ULL | predicate | d_low | (u64{250} << 8) | (u64{255} << 20));
             break;
         }
         case 0x825: { // IMAD.WIDE.U32 with 32-bit immediate (GPR): R(d):R(d+1) = Ra * imm + Rc:R(c+1)
@@ -527,7 +527,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 c = insn.Bits(64, 8);
             const u32 c_low = c, c_high = c == 63 ? 255U : c + 1;
             const u32 d_low = insn.Bits(16, 8), d_high = insn.Bits(16, 8) + 1;
-            if (native_predicate != 7 || (insn.words[2] & ~0xffU) != 0x078e0000 ||
+            if ((insn.words[2] & ~0xffU) != 0x078e0000 ||
                 (insn.Bits(16, 8) & 1) || (c != 63 && (c & 1)) ||
                 d_low == 255 || d_high >= 254 || c_low >= 254 || c_high >= 254)
                 return fail(index, "native wide multiply immediate mode");
@@ -535,15 +535,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             xmad(251, a, b, 250, true, false, 2, true);
             xmad(250, a, b, 251, false, true, 1, true);
             xmad(252, a, b, 251, true, true, 2, true);
-            emit(0x3828000000070000ULL | 250 | (u64{250} << 8) | (u64{16} << 20));
-            emit(0x5c10000000070000ULL | 253 | (u64{250} << 8) | (u64{252} << 20));
+            emit(0x3828000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000000000ULL | predicate | 253 | (u64{250} << 8) | (u64{252} << 20));
             xmad(250, a, b, 255, false, false, 0, true);
             xmad(251, a, b, 255, true, false, 0, true);
             xmad(251, a, b, 251, false, true, 0, true);
-            emit(0x5c18000000070000ULL | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
-            emit(0x5c10000000070000ULL | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
-            emit(0x5c10000000070000ULL | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
-            emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
+            emit(0x5c18000000000000ULL | predicate | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
+            emit(0x5c10000000000000ULL | predicate | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            emit(0x5c10000000000000ULL | predicate | d_low | (u64{250} << 8) | (u64{255} << 20));
             break;
         }
         case 0x8a5: { // IMAD.WIDE.U32 with 32-bit immediate: UR(d):UR(d+1) = URa * imm + URc:UR(c+1)
@@ -557,7 +557,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 c = insn.Bits(64, 8);
             const u32 c_low = uniform_register(c), c_high = c == 63 ? 255U : uniform_register(c + 1);
             const u32 d_low = uniform_register(insn.Bits(16, 8)), d_high = uniform_register(insn.Bits(16, 8) + 1);
-            if (native_predicate != 7 || (insn.words[2] & ~0xffU) != 0x0f8e0000 ||
+            if ((insn.words[2] & ~0xffU) != 0x0f8e0000 ||
                 (insn.Bits(16, 8) & 1) || (c != 63 && (c & 1)) || a == ~0U ||
                 c_low == ~0U || c_high == ~0U || d_low == ~0U || d_high == ~0U || d_low == 255)
                 return fail(index, "native uniform wide multiply immediate mode");
@@ -566,15 +566,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             xmad(251, a, b, 250, true, false, 2, true);
             xmad(250, a, b, 251, false, true, 1, true);
             xmad(252, a, b, 251, true, true, 2, true);
-            emit(0x3828000000070000ULL | 250 | (u64{250} << 8) | (u64{16} << 20));
-            emit(0x5c10000000070000ULL | 253 | (u64{250} << 8) | (u64{252} << 20));
+            emit(0x3828000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000000000ULL | predicate | 253 | (u64{250} << 8) | (u64{252} << 20));
             xmad(250, a, b, 255, false, false, 0, true);
             xmad(251, a, b, 255, true, false, 0, true);
             xmad(251, a, b, 251, false, true, 0, true);
-            emit(0x5c18000000070000ULL | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
-            emit(0x5c10000000070000ULL | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
-            emit(0x5c10000000070000ULL | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
-            emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
+            emit(0x5c18000000000000ULL | predicate | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
+            emit(0x5c10000000000000ULL | predicate | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            emit(0x5c10000000000000ULL | predicate | d_low | (u64{250} << 8) | (u64{255} << 20));
             break;
         }
         case 0x827: { // IMAD.HI.U32, captured zero addend
@@ -1699,6 +1699,31 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 if (target != 255)
                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{250 + i} << 20));
             }
+            break;
+        }
+        case 0x360: case 0x361: { // TEX.B bindless texture sample (shadow-map depth compare).
+            // 0x36x is the bindless family (cf. 0x36a TMML.B: handle in Rb, coords
+            // in Ra); bit 11 (0x800) selects the bound form 0xb60/0xb61. The Maxwell
+            // frontend's TEX_b reads the handle from meta_reg, then dref when dc=1.
+            // Observed form: 2D, dc=1, mask=1, implicit LOD, no offset. Operands:
+            // Ra=(u,v), Rb=(handle,dref).
+            const u32 mask = insn.Bits(72, 4);
+            const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
+            const bool depth_compare = insn.Bits(60, 1);
+            const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            if (dimension != 1 || !depth_compare || mask != 1 || lod != 0 ||
+                insn.Bits(76, 1) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+                source_a == 255 || source_b == 255 || source_a + 1 >= 246 ||
+                source_b + 1 >= 246 || dest >= 246)
+                return fail(index, "native bindless texture sample mode");
+            // Maxwell TEX_b (maxwell.inc "1101 1110 10-- ----", base 0xDE80...):
+            // dest bits 0-7, coord bits 8-15, meta bits 20-27, type bits 28-30,
+            // mask bits 31-34, aoffi bit 36, blod bits 37-39, nodep bit 49,
+            // dc bit 50, sparse_pred bits 51-53 (=7 PT). coord=Ra (u,v),
+            // meta=Rb (handle, then dref).
+            emit(0xde80000000000000ULL | predicate | dest | (u64{source_a} << 8) |
+                 (u64{source_b} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+                 (u64{insn.Bits(90, 1)} << 49) | (u64{1} << 50) | (u64{7} << 51));
             break;
         }
         case 0xb60: case 0xf60: { // TEX, scalar 2D implicit-LOD sample (0xf60: bit 10 mode ext)
