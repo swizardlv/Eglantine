@@ -29,6 +29,7 @@ add_executable(tests
     video_core/ampere_f2i.cpp
     video_core/ampere_ldc.cpp
     video_core/ampere_vote.cpp
+    video_core/ampere_high_uniform.cpp
     input_common/calibration_configuration_job.cpp
 )
 
