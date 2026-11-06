@@ -1574,7 +1574,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             break;
         }
         case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
-            if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
+            if ((insn.Bits(59, 5) & ~1U) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
                 insn.Bits(76, 14) || insn.Bits(91, 1) || (insn.Bits(54, 5) != 2 && insn.Bits(54, 5) != 0) ||
                 insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
@@ -1674,7 +1674,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 binding = insn.Bits(54, 5);
             const bool depth = insn.Bits(78, 1) != 0;
-            if (insn.Bits(61, 3) != 1 || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+            if (insn.Bits(61, 3) != 1 || (insn.Bits(76, 2) != 0 && insn.Bits(76, 2) != 2) || insn.Bits(81, 3) != 7 ||
                 insn.Bits(40, 14) > 0x1fff || binding >= 18 || insn.Bits(89, 1) || mask == 0 ||
                 (depth && (!insn.Bits(60, 1) || insn.Bits(80, 1) || insn.Bits(91, 1))))
                 return fail(index, "native texture gather mode");
