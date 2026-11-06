@@ -13,6 +13,7 @@
 #include "core/core.h"
 #include "core/memory.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/command_fetch_order.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/engines/kepler_compute.h"
@@ -155,13 +156,12 @@ bool DmaPusher::Step() {
         // (the split only starts with unsafe reads; the settings can change mid-game).
         const bool use_safe = !VideoCommon::GpuSplit::Get().Active() &&
                               (Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh() : Settings::IsDMALevelSafe());
-        // The words as submitted, unless this is a resumed entry or the GPU has newer ones the
-        // safe read below would flush (with the split, the front can't tell: it reads memory
-        // unflushed anyway).
-        const bool submitted = command_resume_offset == 0 &&
-                               dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
-                               !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
-                                                                          header.size * sizeof(u32)));
+        // Resume and GPU-written entries need live words, even after a flush cleared dirty state.
+        const bool submitted = VideoCommon::CanUseSubmittedCommands(
+            command_resume_offset != 0,
+            dma_pushbuffer_subindex < command_list.submitted_offsets.size(), false,
+            use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
+                                                     header.size * sizeof(u32)));
         if (submitted) {
             const std::span<const CommandHeader> commands{
                 command_list.submitted_words.data() +
