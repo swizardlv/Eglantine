@@ -304,7 +304,10 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
-            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
+            // 41 CreateGraphicsDevice deliberately UNREGISTERED (2026-11-06): build32 proved
+            // even a stub-equivalent reply (success, no handle) kills Ocarina <1ms after the
+            // call, while build27 (auto-stub) passed. Leave auto-stubbed until the real
+            // trigger is found; the handler below stays as documentation only.
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
