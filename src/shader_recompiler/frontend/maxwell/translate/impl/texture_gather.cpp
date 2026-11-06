@@ -140,7 +140,7 @@ void Impl(TranslatorVisitor& v, u64 insn, ComponentType component_type, OffsetTy
     IR::Value offset2;
     IR::F32 dref;
     if (!is_bindless) {
-        handle = v.ir.Imm32(static_cast<u32>(tld4.cbuf_offset.Value() * 4));
+        handle = ResolveTextureHandle(v.ir, static_cast<u32>(tld4.cbuf_offset.Value() * 4));
     } else {
         handle = v.X(meta_reg++);
     }

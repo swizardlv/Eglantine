@@ -43,6 +43,13 @@ struct LoweredProgram {
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
+// Encode an Ampere texture descriptor (bank, word offset) into the 13-bit
+// Maxwell TEX cbuf_offset field. Bit 12 = explicit-bank flag, bits 10-11 =
+// bank (0-3), bits 0-9 = word offset (0-1023). Real offsets here are <= 0xff.
+constexpr u64 EncodeTexBankOffset(u64 bank, u64 offset_words) {
+    return 0x1000ULL | ((bank & 0x3ULL) << 10) | (offset_words & 0x3ffULL);
+}
+
 inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     LoweredProgram result;
     struct Relocation { u32 output_index; s64 target; };
@@ -131,7 +138,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
         if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x4a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
             opcode == 0x292 || opcode == 0x892 || opcode == 0x291) {
-            if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x892)
+            if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x892 && opcode != 0x890 &&
+                opcode != 0x891)
                 return fail(index, "native uniform arithmetic predication");
             uniform_guard = insn.Bits(12, 4) != 7;
             rewritten_uniform = true;
@@ -860,9 +868,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (high != 255 && ((channels > 3 && (high & 1)) || high >= 248)) ||
                 coordinates >= 248 || derivatives >= 247)
                 return fail(index, "native gradient texture mode");
-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                return fail(index, "native texture descriptor buffer conflict");
-            result.required_texture_buffer = binding;
+            if (result.required_texture_buffer == ~0U)
+                result.required_texture_buffer = binding;
             // Maxwell writes the channels to consecutive registers: when the second destination
             // doesn't follow Rd (Splatoon Raiders: R12/R18, R18/R44), write them to scratch and move
             // each into place.
@@ -1077,9 +1084,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || dest == 255 ||
                 coordinate > (dimension == 4 ? 252U : 253U))
                 return fail(index, "native formatted surface load mode");
-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                return fail(index, "native surface descriptor buffer conflict");
-            result.required_texture_buffer = binding;
+            if (result.required_texture_buffer == ~0U)
+                result.required_texture_buffer = binding;
             emit(base(0xeb00000000000000ULL) | (u64{coordinate} << 8) |
                 (u64{channels} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
@@ -1091,9 +1097,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (insn.words[2] != 0x00100f00 || dimension < 3 || dimension > 5 ||
                 binding >= 18 || offset > 0x1fff || insn.Bits(59, 2) || data > 252 || coordinate > (dimension >= 4 ? 252U : 253U))
                 return fail(index, "native formatted surface store mode");
-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                return fail(index, "native surface descriptor buffer conflict");
-            result.required_texture_buffer = binding;
+            if (result.required_texture_buffer == ~0U)
+                result.required_texture_buffer = binding;
             emit(0xeb20000000000000ULL | predicate | data | (u64{coordinate} << 8) |
                 (u64{15} << 20) | (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
@@ -1170,9 +1175,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if ((insn.words[2] & ~0x03800000U) != 0x0010e000 || (dimension != 1 && dimension != 3) || binding >= 18 ||
                 offset > 0x1fff || insn.Bits(59, 2) || coordinate > 253)
                 return fail(index, "native surface reduction mode");
-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                return fail(index, "native surface descriptor buffer conflict");
-            result.required_texture_buffer = binding;
+            if (result.required_texture_buffer == ~0U)
+                result.required_texture_buffer = binding;
             // Maxwell SURED: operand 0-7, coordinates 8-15, op 24, U32 zero at 20,
             // type 33 (1 = buffer, 3 = 2D), bound offset 36, bound 51.
             emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
@@ -1583,7 +1587,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 return fail(index, "native texture dimension query mode");
             result.required_texture_buffer = insn.Bits(54, 5);
             emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
-                 (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                 (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) |
                  (u64{insn.Bits(90, 1)} << 49));
             break;
         }
@@ -1615,9 +1619,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 return fail(index, "native texel fetch mode or descriptor binding");
             }
             const u32 binding = insn.Bits(54, 5);
-            if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                return fail(index, "native texture descriptor buffer conflict");
-            result.required_texture_buffer = binding;
+            if (result.required_texture_buffer == ~0U)
+                result.required_texture_buffer = binding;
             if (array) {
                 emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a + 1} << 20));
                 emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_b} << 20));
@@ -1625,7 +1628,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             emit(0xda00000000000000ULL | predicate | dest | (u64{source_a} << 8) |
                  (u64{source_b} << 20) | (u64{insn.Bits(64, 8)} << 28) |
-                 (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                 (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) | (u64{insn.Bits(90, 1)} << 49) |
                  (u64{swizzle} << 50) | (u64{array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
             break;
         }
@@ -1652,8 +1655,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (in_a < coordinates && source_b + (coordinates - in_a) > 246) ||
                 (opcode == 0xf69 && (handle >= 246 || insn.Bits(46, 13) || !insn.Bits(91, 1))) ||
                 (opcode == 0x36a && (handle >= 246 || insn.Bits(40, 19) || insn.Bits(91, 1))) ||
-                (!bindless && (insn.Bits(40, 14) > 0x1fff || binding >= 18 ||
-                               (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))))
+                (!bindless && (insn.Bits(40, 14) > 0x1fff || binding >= 18)))
                 return fail(index, "native texture LOD query mode");
             if (!bindless) result.required_texture_buffer = binding;
             for (u32 i = 0; i < coordinates; ++i)
@@ -1662,7 +1664,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (bindless) emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
             emit((bindless ? 0xdf60000000000000ULL : 0xdf58000000000000ULL) | predicate | 250 | (u64{250} << 8) |
                  (u64{bindless ? 246U : 255U} << 20) | (u64{dimension * 2} << 28) | (u64{mask} << 31) |
-                 (u64{bindless ? 0U : insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49));
+                 (u64{bindless ? 0U : EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14))} << 36) | (u64{insn.Bits(90, 1)} << 49));
             const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
             for (u32 i = 0; i < components; ++i) {
@@ -1681,8 +1683,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const bool depth = insn.Bits(78, 1) != 0;
             if (insn.Bits(61, 3) != 1 || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
                 insn.Bits(40, 14) > 0x1fff || binding >= 18 || insn.Bits(89, 1) || mask == 0 ||
-                (depth && (!insn.Bits(60, 1) || insn.Bits(80, 1) || insn.Bits(91, 1))) ||
-                (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding))
+                (depth && (!insn.Bits(60, 1) || insn.Bits(80, 1) || insn.Bits(91, 1))))
                 return fail(index, "native texture gather mode");
             result.required_texture_buffer = binding;
             // Two coordinates: x in Ra, y in Rb; with depth compare, x and y in Ra, Ra+1, depth in Rb.
@@ -1694,7 +1695,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
             }
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{depth ? 246U : 255U} << 20) |
-                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                 (u64{2} << 28) | (u64{mask} << 31) | (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{depth} << 50) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
             const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
@@ -1730,7 +1731,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 }
                 emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
                      (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
-                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) | (u64{insn.Bits(90, 1)} << 49) |
                      (u64{1} << 50) | (u64{7} << 51));
                 break;
             }
@@ -1758,9 +1759,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                     (count > in_a && source_b != 255 && source_b + (count - in_a) > 246))
                     return false;
                 const u32 binding = insn.Bits(54, 5);
-                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
-                    return false;
-                result.required_texture_buffer = binding;
+                if (result.required_texture_buffer == ~0U)
+                    result.required_texture_buffer = binding;
                 const auto copy = [&](u32 target, u32 source) {
                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
                 };
@@ -1773,7 +1773,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 if (depth_compare) copy(meta++, value(next++));
                 emit(0xc000000000000000ULL | predicate | 250 | (u64{250} << 8) |
                      (u64{meta == 246 ? 255U : 246U} << 20) | (u64{maxwell_type[dimension]} << 28) |
-                     (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                     (u64{mask} << 31) | (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51) |
                      (u64{offsets} << 54) | (u64{lod} << 55));
                 const u32 components = static_cast<u32>(std::popcount(mask));
@@ -1826,7 +1826,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             result.required_texture_buffer = insn.Bits(54, 5);
             emit((0xd800000000000000ULL & ~(u64{insn.Bits(79, 1)} << 59)) | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{insn.Bits(32, 8)} << 20) | (u64{insn.Bits(64, 8)} << 28) |
-                 (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                 (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) | (u64{insn.Bits(90, 1)} << 49) |
                  (u64{swizzle} << 50) | (u64{dimension == 5 ? (lod ? 8U : 7U) : depth_compare ? (lod ? 6U : 4U) : (lod == 3 ? 3U : lod ? 2U : 1U)} << 53));
             break;
         }
@@ -2146,7 +2146,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                  (u64{insn.Bits(74, 2)} << 47) | (u64{insn.Bits(71, 1)} << 49));
             break;
         }
-        case 0x20b: case 0x80b: case 0xa0b: // FSETP
+        case 0x20b: case 0x80b: case 0xa0b: case 0xc0b: // FSETP
         case 0x20c: case 0x80c: case 0xa0c: case 0xc0c: { // ISETP
             const bool floating = (opcode & 0x1ff) == 0xb;
             if (!floating && insn.Bits(72, 1)) {

@@ -117,7 +117,7 @@ void Impl(TranslatorVisitor& v, u64 insn, bool is_bindless) {
     if (is_bindless) {
         handle = v.X(meta_reg++);
     } else {
-        handle = v.ir.Imm32(static_cast<u32>(tld.cbuf_offset.Value() * 4));
+        handle = ResolveTextureHandle(v.ir, static_cast<u32>(tld.cbuf_offset.Value() * 4));
     }
     if (tld.lod != 0) {
         lod = v.X(meta_reg++);
