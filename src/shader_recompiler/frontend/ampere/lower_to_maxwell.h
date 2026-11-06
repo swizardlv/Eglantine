@@ -1719,10 +1719,10 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             if (dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
                 if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
-                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
+                    insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || (insn.Bits(54, 5) != 2 && insn.Bits(54, 5) != 0) ||
                     (source_a & 1) || (source_b & 1) || source_a >= 248 || source_b >= 248 || dest >= 248)
                     return fail(index, "native array depth comparison sample mode");
-                result.required_texture_buffer = 2;
+                result.required_texture_buffer = insn.Bits(54, 5);
                 for (u32 i = 0; i < 3; ++i) {
                     const u32 source = i < 2 ? source_a + i : source_b;
                     emit(0x5c98000000000000ULL | predicate | (250 + i) |
@@ -1815,7 +1815,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 insn.Bits(81, 3) != 7 || (lod > 1 && (lod != 3 || dimension != 1 || depth_compare)) ||
                 (lod == 3 && ((source_a & 1) || source_a >= 249)) ||
                 insn.Bits(59, 1) ||
-                insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) != 2 ||
+                insn.Bits(40, 14) > 0x1fff || (insn.Bits(54, 5) != 2 && insn.Bits(54, 5) != 0) ||
                 dest == 255 || (mask & (mask - 1) && ((dest & 1) || dest >= 254)) ||
                 (split && mask == 15 && ((second_dest & 1) || second_dest >= 254)) ||
                 (depth_compare && (dimension != 1 || split || mask != 1 || (source_a & 1) || source_a >= 249)) ||
