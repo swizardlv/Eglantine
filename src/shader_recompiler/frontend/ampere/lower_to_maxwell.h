@@ -2260,8 +2260,8 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         case 0x217: case 0x817: case 0xa17: case 0xc17: { // IMNMX register, immediate, cbuf or uniform operand.
             if ((insn.words[2] & ~(0x04000200U | (opcode == 0xc17 ? 0x08000000U : 0U))) != 0x03800000 ||
                 (opcode != 0xa17 && opcode != 0x817 && insn.words[1] > 255U) ||
-                (opcode == 0x817 && (static_cast<i32>(insn.words[1]) < -262144 ||
-                                     static_cast<i32>(insn.words[1]) > 262143)) ||
+                (opcode == 0x817 && (static_cast<s32>(insn.words[1]) < -262144 ||
+                                     static_cast<s32>(insn.words[1]) > 262143)) ||
                 (opcode == 0xa17 && (!valid_cbuf() || insn.Bits(62, 2))))
                 return fail(index, "native integer min/max mode");
             const u32 source = opcode == 0xc17   ? uniform_register(insn.words[1])
