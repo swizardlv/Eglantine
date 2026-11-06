@@ -2345,7 +2345,6 @@ private:
         bytes.resize(layout.size);
         decoder->Render(*frame.picture, layout.format, width, height, layout.pitch,
                         layout.chroma_offset, bytes);
-        DumpFrame(bytes, layout, width, height);
 
         auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
         const auto cpu_addr_opt = registry.CpuAddressOf(address);
@@ -2360,36 +2359,6 @@ private:
         }
 
         return {width, height};
-    }
-
-    // EDEN_NX2_VDEC_DUMP=<dir>: save the luma of every 120th decoded frame, a quarter of its size,
-    // as nx2-vdec-<frame>.pgm (to check what the decoder wrote, apart from how the game shows it).
-    void DumpFrame(const std::vector<u8>& bytes, const Nx2DecoderImageLayout& layout, u32 width,
-                   u32 height) {
-        // DIAGNOSTIC (build35, revert after the Ocarina black-frame check): the env var
-        // is not settable from the PS5 UI, so fall back to a fixed dir on the console.
-        static const char* const directory = [] {
-            if (const char* env = std::getenv("EDEN_NX2_VDEC_DUMP")) {
-                return env;
-            }
-            return "/data/eglantineps5/vdec-dump";
-        }();
-        if (directory == nullptr || (m_frames_out % 120) != 0) {
-            return;
-        }
-        const u32 bpp = layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12 ? 1 : 4;
-        const u32 w = width / 4;
-        const u32 h = height / 4;
-        const std::string path = fmt::format("{}/nx2-vdec-{:05}.pgm", directory, m_frames_out + 1);
-        if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
-            std::fprintf(file, "P5 %u %u 255\n", w, h);
-            for (u32 y = 0; y < h; ++y) {
-                for (u32 x = 0; x < w; ++x) {
-                    std::fputc(bytes[y * 4 * layout.pitch + x * 4 * bpp], file);
-                }
-            }
-            std::fclose(file);
-        }
     }
 
     struct ReadyState {
