@@ -1574,7 +1574,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             break;
         }
         case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
-            if ((insn.Bits(59, 5) & ~1U) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
+            if ((insn.Bits(59, 5) & ~1U) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 ||
                 insn.Bits(76, 14) || insn.Bits(91, 1) || (insn.Bits(54, 5) != 2 && insn.Bits(54, 5) != 0) ||
                 insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
@@ -1712,7 +1712,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const bool depth_compare = insn.Bits(60, 1);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             if (dimension != 1 || !depth_compare || mask != 1 || lod != 0 ||
-                insn.Bits(76, 1) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+                insn.Bits(76, 1) || insn.Bits(81, 3) != 7 ||
                 source_a == 255 || source_b == 255 || source_a + 1 >= 246 ||
                 source_b + 1 >= 246 || dest >= 246)
                 return fail(index, "native bindless texture sample mode");
@@ -2259,11 +2259,14 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0x217: case 0x817: case 0xa17: case 0xc17: { // IMNMX register, immediate, cbuf or uniform operand.
             if ((insn.words[2] & ~(0x04000200U | (opcode == 0xc17 ? 0x08000000U : 0U))) != 0x03800000 ||
-                (opcode != 0xa17 && insn.words[1] > (opcode == 0x817 ? 0x7ffffU : 255U)) ||
+                (opcode != 0xa17 && opcode != 0x817 && insn.words[1] > 255U) ||
+                (opcode == 0x817 && (static_cast<i32>(insn.words[1]) < -262144 ||
+                                     static_cast<i32>(insn.words[1]) > 262143)) ||
                 (opcode == 0xa17 && (!valid_cbuf() || insn.Bits(62, 2))))
                 return fail(index, "native integer min/max mode");
             const u32 source = opcode == 0xc17   ? uniform_register(insn.words[1])
                                : opcode == 0xa17 ? operand(1, false)
+                               : opcode == 0x817 ? (insn.words[1] & 0x7ffffU)
                                                  : insn.words[1];
             if (source == ~0U) return fail(index, "native uniform min/max operand");
             emit(base(opcode == 0x817 ? 0x3820000000000000ULL : 0x5c20000000000000ULL) |
