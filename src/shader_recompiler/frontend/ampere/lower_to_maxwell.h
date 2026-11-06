@@ -13,21 +13,10 @@
 #include <string_view>
 #include <vector>
 #include "common/common_types.h"
+#include "shader_recompiler/frontend/ampere/instruction.h"
+#include "shader_recompiler/frontend/ampere/register_pressure.h"
 
 namespace Shader::Ampere {
-
-struct Instruction {
-    std::array<u32, 4> words;
-
-    u32 Bits(u32 offset, u32 count) const {
-        u64 bits = words[offset / 32];
-        if (offset / 32 + 1 < words.size()) {
-            bits |= u64{words[offset / 32 + 1]} << 32;
-        }
-        return static_cast<u32>((bits >> (offset % 32)) & ((u64{1} << count) - 1));
-    }
-};
-static_assert(sizeof(Instruction) == 16);
 
 struct LoweredProgram {
     std::vector<u64> instructions;
@@ -50,7 +39,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
     LoweredProgram result;
     // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
     const u32 high_uniform_base = 216 - high_uniforms;
-    struct Relocation { u32 output_index; s64 target; };
+    // output_target: a branch to the end of this instruction's own output (before the next
+    // instruction's), when register copies follow the instruction.
+    struct Relocation { u32 output_index; s64 target; bool call = false; u32 output_target = ~0U; };
     std::vector<Relocation> relocations;
     std::vector<u32> barrier_tokens;
     std::vector<u32> call_targets;
@@ -80,7 +71,8 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
     const auto finish = [&](u32 index) {
         for (const auto& relocation : relocations) {
             if (relocation.target > index) return fail(index, "native branch or call leaves captured program");
-            const u32 target = result.source_instruction_offsets[static_cast<size_t>(relocation.target)];
+            const u32 target = relocation.output_target != ~0U ? relocation.output_target :
+                result.source_instruction_offsets[static_cast<size_t>(relocation.target)];
             const s64 relative = s64{address_of(target)} - address_of(relocation.output_index) - 8;
             if (relative < -0x800000 || relative > 0x7fffff) return fail(index, "lowered branch distance");
             result.instructions[relocation.output_index] |= (static_cast<u64>(relative) & 0xffffff) << 20;
@@ -89,6 +81,9 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         return result;
     };
     if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
+    // Native registers from here up share the lowering's uniform mirrors and scratch; the
+    // instructions that use them get shadow copies (PrepareRegisterPressure).
+    const u32 shadow_boundary = (uses_uniform_bank ? high_uniform_base : 246U) & ~3U;
     for (u32 index = 0; index < code.size(); ++index) {
         auto insn = code[index];
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
@@ -108,13 +103,23 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)
                 return fail(index, "native callee overwrites link register");
         }
-        // Scratch values and emulated uniform state occupy reserved high GPRs.
-        // Reject native accesses that could alias that state.
+        // Scratch values and emulated uniform state occupy reserved high GPRs. Native accesses
+        // that could alias that state go through shadow copies, or are rejected.
+        RegisterPressure pressure{insn};
+        bool requires_shadow = false;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 && opcode != 0x987 && opcode != 0xf66 && opcode != 0x988 && opcode != 0x927) continue;
             const u32 reg = insn.Bits(bit, 8);
-            if (reg >= (uses_uniform_bank ? high_uniform_base : 246U) && reg < 255) return fail(index, "native program uses lowering scratch registers");
+            if (reg >= shadow_boundary && reg < 255) requires_shadow = true;
         }
+        if (requires_shadow) {
+            pressure = PrepareRegisterPressure(insn, shadow_boundary);
+            if (!pressure.valid) return fail(index, "native program uses lowering scratch registers");
+            insn = pressure.instruction;
+            result.instructions.insert(result.instructions.end(), pressure.prefix.begin(), pressure.prefix.end());
+        }
+        const size_t instruction_start = result.instructions.size();
+        const size_t relocation_start = relocations.size();
         // TLD/TLD4 .F16 (bit 79): the components come packed in pairs, (0, 1) in Rd and (2, 3) in
         // the second destination. Lowered as the F32 form into R248/R249 and R246/R247, then packed.
         if ((opcode == 0xb66 || opcode == 0xb63) && insn.Bits(79, 2) == 1) {
@@ -2582,7 +2587,7 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             }
             call_targets.push_back(static_cast<u32>(target / 16));
             call_links.push_back(link);
-            relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});
+            relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16, true});
             emit(0xe26000000007000fULL);
             break;
         }
@@ -2705,6 +2710,15 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             emit(0x38f0000000070000ULL | (u64{254} << 8) | (u64{output_mask} << 20));
         }
         if (guarded_uniform) restore_predicate(guard_mask);
+        if (!pressure.suffix.empty()) {
+            // Branches that skip the rest of this instruction land on its copies back.
+            for (size_t relocation = relocation_start; relocation < relocations.size(); ++relocation) {
+                auto& pending = relocations[relocation];
+                if (!pending.call && pending.output_index >= instruction_start && pending.target == index + 1)
+                    pending.output_target = static_cast<u32>(result.instructions.size());
+            }
+            result.instructions.insert(result.instructions.end(), pressure.suffix.begin(), pressure.suffix.end());
+        }
     }
     return fail(static_cast<u32>(code.size()), main_exited ? "native program lacks captured library return" : "native program has no unconditional EXIT");
 }
