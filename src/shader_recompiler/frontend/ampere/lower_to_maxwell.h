@@ -1674,21 +1674,34 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 binding = insn.Bits(54, 5);
             const bool depth = insn.Bits(78, 1) != 0;
-            if (insn.Bits(61, 3) != 1 || (insn.Bits(76, 2) != 0 && insn.Bits(76, 2) != 2) || insn.Bits(81, 3) != 7 ||
+            const u32 dimension = insn.Bits(61, 3);
+            const bool array = dimension == 5;
+            if ((dimension != 1 && !array) || (insn.Bits(76, 2) != 0 && insn.Bits(76, 2) != 2) || insn.Bits(81, 3) != 7 ||
                 insn.Bits(40, 14) > 0x1fff || binding >= 18 || insn.Bits(89, 1) || mask == 0 ||
-                (depth && (!insn.Bits(60, 1) || insn.Bits(80, 1) || insn.Bits(91, 1))))
+                (depth && (!insn.Bits(60, 1) || insn.Bits(80, 1) || insn.Bits(91, 1))) ||
+                (array && depth))
                 return fail(index, "native texture gather mode");
             result.required_texture_buffer = binding;
             // Two coordinates: x in Ra, y in Rb; with depth compare, x and y in Ra, Ra+1, depth in Rb.
+            // ARRAY_2D: u in Ra, v in Ra+1, layer in Rb (same packing as depth). Maxwell's
+            // ARRAY_2D MakeCoords reads (array, u, v) from (reg, reg+1, reg+2), so the
+            // scratch layout is 250=layer, 251=u, 252=v.
             const u32 y = depth ? (source_a == 255 ? 255U : source_a + 1) : source_b;
-            emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
-            emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) |
-                 (u64{y} << 20));
-            if (depth) {
-                emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+            if (array) {
+                emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_b} << 20));
+                emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) | (u64{source_a} << 20));
+                emit(0x5c98000000000000ULL | predicate | 252 | (u64{15} << 39) |
+                     (u64{source_a == 255 ? 255U : source_a + 1} << 20));
+            } else {
+                emit(0x5c98000000000000ULL | predicate | 250 | (u64{15} << 39) | (u64{source_a} << 20));
+                emit(0x5c98000000000000ULL | predicate | 251 | (u64{15} << 39) |
+                     (u64{y} << 20));
+                if (depth) {
+                    emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
+                }
             }
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{depth ? 246U : 255U} << 20) |
-                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
+                 (u64{array ? 3U : 2U} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{depth} << 50) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
             const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
