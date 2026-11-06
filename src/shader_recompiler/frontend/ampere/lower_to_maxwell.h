@@ -129,7 +129,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         bool rewritten_uniform = false;
         bool uniform_guard = false;
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
-        if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
+        if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x4a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
             opcode == 0x292 || opcode == 0x892 || opcode == 0x291) {
             if (insn.Bits(12, 4) != 7 && opcode != 0x292 && opcode != 0x892)
                 return fail(index, "native uniform arithmetic predication");
@@ -151,7 +151,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 uniform_output = insn.Bits(81, 3);
                 insn.words[2] = (insn.words[2] & ~(7U << 17)) | ((6 - uniform_output) << 17);
             }
-            opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
+            opcode = opcode == 0x2a4 ? 0x224 : opcode == 0x8a4 ? 0x824 : opcode == 0x4a4 ? 0x424 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
                    : opcode == 0x292 ? 0x212 : opcode == 0x892 ? 0x812 : opcode == 0x291 ? 0x211 : 0x210;
         }
         // 0x899 (USHF) lowers to one SHR/SHL, so a uniform guard is swapped in like these.
@@ -1549,7 +1549,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0xb6f: { // TXQ texture dimensions, two packed scalar outputs.
             if (insn.Bits(59, 5) || insn.Bits(64, 8) != 255 || insn.Bits(72, 4) == 0 || insn.Bits(72, 4) > 3 ||
-                insn.Bits(76, 14) || insn.Bits(91, 1) || insn.Bits(54, 5) != 2 ||
+                insn.Bits(76, 14) || insn.Bits(91, 1) || (insn.Bits(54, 5) != 2 && insn.Bits(54, 5) != 0) ||
                 insn.Bits(40, 14) > 0x1fff || (insn.Bits(72, 4) == 3 && (dest & 1)) || dest >= 254)
                 return fail(index, "native texture dimension query mode");
             result.required_texture_buffer = 2;
