@@ -304,7 +304,12 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
-            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
+            // 41 CreateGraphicsDevice deliberately UNREGISTERED (2026-11-06): build35
+            // PROVED on the real live copy that returning a session handle kills
+            // Ocarina <1ms after the call (SetTerminateResult 0x2), while build33/34
+            // (auto-stub, success with no handle) pass this point. The game does not
+            // want a handle here; Yoshi's 0x2a2 null deref is a different cause, not a
+            // missing GraphicsDevice session. Handler below stays as documentation only.
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -372,17 +377,16 @@ private:
     }
 
     // 41 (Switch 2 GpuSession CreateGraphicsDevice): NvRm passes the NvRm/GPu magic in
-    // words 2-3. Returns a fresh GraphicsDevice session, like OpenGpuSession (gsv 497)
-    // hands out a fresh INx2GpuSession. build31 returned the SAME session
-    // (shared_from_this()) and the "handle kills the guest" reading was contaminated by
-    // the stale deploy location (the live copy was never build31), so it was never a
-    // real test. build33 (auto-stub, no handle) let Yoshi pass gpu41 but it died 28ms
-    // later dereferencing a null GraphicsDevice (0x2a2, pc 0x8dd34ae0), so the game does
-    // want a session here; give it a new one.
+    // words 2-3. build35 PROVED on the real live copy that returning a session handle
+    // kills Ocarina <1ms after the call (0x2); build33/34 (auto-stub, success with no
+    // handle) pass. So return success with NO handle (auto-stub equivalent). Yoshi's
+    // 0x2a2 null deref (pc 0x8dd34ae0) happens 28ms after gpu41 on the auto-stub build,
+    // so it is a different cause, not a missing GraphicsDevice session.
     void CreateGraphicsDevice(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         LOG_INFO(Service, "nx2:gpu TIPC 41 CreateGraphicsDevice magic {:#x} {:#x}", w[2], w[3]);
-        ReturnRawSession(system, ctx, std::make_shared<INx2GpuSession>(system));
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
     }
 
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
