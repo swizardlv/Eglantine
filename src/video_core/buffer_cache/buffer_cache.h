@@ -792,7 +792,12 @@ void BufferCache<P>::PopAsyncBuffers() {
             gpu_modified_ranges.Subtract(start, end - start);
         });
     }
-    async_buffers_death_ring.emplace_back(*async_buffer);
+    // Free the staging buffer as soon as the fence passes instead of parking
+    // it until end of frame: the fence is signaled (GPU done) and the data
+    // has been copied to CPU, so the buffer is no longer needed. Holding it
+    // pinned gigabytes of device memory on PS5 (see crash-20261106-213155:
+    // VK_ERROR_OUT_OF_DEVICE_MEMORY, largest free block 8 MiB).
+    runtime.FreeDeferredStagingBuffer(*async_buffer);
     async_buffers.pop_front();
     pending_downloads.pop_front();
 }
