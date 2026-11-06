@@ -373,9 +373,12 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       texture_cache{texture_cache_}, shader_notify{shader_notify_},
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue()},
+      // TEST: default-on for OOT (upstream is opt-in via env var, which PS5
+      // cannot set easily). Revert to opt-in once the fog/exposure
+      // hypothesis is confirmed.
       oot_visual_workaround{[] {
           const char* value = std::getenv("EDEN_NX2_OOT_VISUAL_WORKAROUND");
-          return value != nullptr && std::string_view{value} == "1";
+          return value == nullptr || std::string_view{value} == "1";
       }()},
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
