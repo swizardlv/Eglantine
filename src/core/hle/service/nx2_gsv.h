@@ -372,13 +372,16 @@ private:
     }
 
     // 41 (Switch 2 GpuSession CreateGraphicsDevice): NvRm passes the NvRm/GPu magic in
-    // words 2-3. The graphics device is this GPU session itself: it serves the
-    // KUserWorkerSession commands (101/102/211-216) the device uses for GPU memory and job
-    // submission, so hand back a session on this object (same as OpenSubSession gpu 22).
+    // words 2-3. build31 PROVED a session handle in the reply kills the guest: Ocarina
+    // (7.8s) and Yoshi (9.37s) both PANIC <1ms after ReturnRawSession returned, while on
+    // build27 (auto-stub: success, no handle) both games passed this point. The real reply
+    // shape is undocumented on SwitchBrew; until it is known, return success with NO
+    // handle (auto-stub equivalent) and keep the log line. gsv 434 stays as-is.
     void CreateGraphicsDevice(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         LOG_INFO(Service, "nx2:gpu TIPC 41 CreateGraphicsDevice magic {:#x} {:#x}", w[2], w[3]);
-        ReturnRawSession(system, ctx, shared_from_this());
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
     }
 
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
