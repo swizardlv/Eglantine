@@ -111,10 +111,13 @@ struct CommandList final {
     CommandList() = default;
     explicit CommandList(std::size_t size) : command_lists(size) {}
     explicit CommandList(boost::container::small_vector<CommandHeader, 512>&& prefetch_command_list_)
-        : prefetch_command_list{std::move(prefetch_command_list_)} {}
+        : prefetch_command_list(prefetch_command_list_.begin(), prefetch_command_list_.end()) {}
 
-    boost::container::small_vector<CommandListHeader, 512> command_lists;
-    boost::container::small_vector<CommandHeader, 512> prefetch_command_list;
+    // Few entries in place: this struct fills a slot of the GPU thread queue (0x1000 of them),
+    // and 512 in each vector took about 25 MiB for the queue alone. Longer lists go on the heap.
+    // After viejunerd/Eglantine-PS5- patch 0024.
+    boost::container::small_vector<CommandListHeader, 32> command_lists;
+    boost::container::small_vector<CommandHeader, 32> prefetch_command_list;
     /// EDEN_NX2_PB_CHECK: hash of each entry's words when it was submitted.
     std::vector<u64> submit_hashes;
 };

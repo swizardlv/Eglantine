@@ -16,7 +16,7 @@
 #include <ranges>
 
 namespace AudioCore {
-constexpr u32 CurrentRevision = 15;
+constexpr u32 CurrentRevision = 18;
 
 enum class SupportTags {
     CommandProcessingTimeEstimatorVersion4,
