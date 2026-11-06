@@ -516,6 +516,37 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
             break;
         }
+        case 0x8a5: { // IMAD.WIDE.U32 with 32-bit immediate: UR(d):UR(d+1) = URa * imm + URc:UR(c+1)
+            // Same shape as 0x2a5 (UIMAD.WIDE), but the multiplier is the 32-bit immediate
+            // in words[1], not a uniform register. The game's video compute shaders use
+            // it with imm 0x88888889 (a division magic number) and c == 63 (zero addend).
+            // xmad immediate mode takes the low/high half of the immediate by b_high, so
+            // the 0x2a5 base-2^16 sequence works unchanged apart from the immediate flag.
+            const u32 a = uniform_register(insn.Bits(24, 8));
+            const u32 b = insn.words[1];
+            const u32 c = insn.Bits(64, 8);
+            const u32 c_low = uniform_register(c), c_high = c == 63 ? 255U : uniform_register(c + 1);
+            const u32 d_low = uniform_register(insn.Bits(16, 8)), d_high = uniform_register(insn.Bits(16, 8) + 1);
+            if (native_predicate != 7 || (insn.words[2] & ~0xffU) != 0x0f8e0000 ||
+                (insn.Bits(16, 8) & 1) || (c != 63 && (c & 1)) || a == ~0U ||
+                c_low == ~0U || c_high == ~0U || d_low == ~0U || d_high == ~0U || d_low == 255)
+                return fail(index, "native uniform wide multiply immediate mode");
+            // High word in R253 (base-2^16 long multiplication, as IMAD.HI), low word in R250.
+            xmad(250, a, b, 255, false, false, 0, true);
+            xmad(251, a, b, 250, true, false, 2, true);
+            xmad(250, a, b, 251, false, true, 1, true);
+            xmad(252, a, b, 251, true, true, 2, true);
+            emit(0x3828000000070000ULL | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000070000ULL | 253 | (u64{250} << 8) | (u64{252} << 20));
+            xmad(250, a, b, 255, false, false, 0, true);
+            xmad(251, a, b, 255, true, false, 0, true);
+            xmad(251, a, b, 251, false, true, 0, true);
+            emit(0x5c18000000070000ULL | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000070000ULL | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
+            emit(0x5c10000000070000ULL | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
+            break;
+        }
         case 0x827: { // IMAD.HI.U32, captured zero addend
             if (insn.words[2] != 0x078e00ff) return fail(index, "native high multiply mode");
             const u32 a = insn.Bits(24, 8), b = insn.words[1];
