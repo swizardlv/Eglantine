@@ -1275,6 +1275,18 @@ TextureCacheRuntime::TextureCacheRuntime(const Device& device_, Scheduler& sched
         bl3d_unswizzle_pass.emplace(device, scheduler, descriptor_pool,
                                    staging_buffer_pool, compute_pass_descriptor_queue);
     }
+    // Offline pack: pre-transcoded textures (EDEN_OFFLINE_PACK=<pack dir>).
+    // Absent/unset means no pack; a corrupt manifest is discarded with a
+    // warning and the runtime transcode path is used instead.
+    if (const char* pack_path = std::getenv("EDEN_OFFLINE_PACK"); pack_path && *pack_path) {
+        if (offline_pack.Load(pack_path)) {
+            LOG_INFO(Render_Vulkan, "Offline pack loaded: {} textures from {}",
+                     offline_pack.EntryCount(), pack_path);
+        } else {
+            LOG_WARNING(Render_Vulkan, "Offline pack at {} could not be loaded, ignoring it",
+                        pack_path);
+        }
+    }
 }
 
 void TextureCacheRuntime::Finish() {
@@ -4201,6 +4213,9 @@ void TextureCacheRuntime::AccelerateImageUpload(
     u32 z_start, u32 z_count) {
 
     if (IsPixelFormatASTC(image.info.format)) {
+        if (TryUploadPackedAstc(image, map)) {
+            return;
+        }
         if (bc_encoder_pass && WillUseGpuBcnTranscode(device, image.info)) {
             return TranscodeAstcToBcn(image, map, swizzles);
         }
@@ -4229,6 +4244,105 @@ void TextureCacheRuntime::AccelerateImageUploadLayers(
         return TranscodeAstcToBcn(image, map, swizzles, layers);
     }
     astc_decoder_pass->AssembleLayers(image, map, swizzles, layers);
+}
+
+bool TextureCacheRuntime::TryUploadPackedAstc(Image& image, const StagingBufferRef& map) {
+    if (offline_pack.Empty()) {
+        return false;
+    }
+    const ImageInfo& info = image.info;
+    // MVP: 2D, single layer, depth 1 only. Anything else falls through to the
+    // runtime transcode.
+    if (info.type != ImageType::e2D || info.size.depth != 1 || info.resources.layers != 1) {
+        return false;
+    }
+    if (!WillUseGpuBcnTranscode(device, info)) {
+        return false;
+    }
+    const auto* entry = offline_pack.Lookup(image.gpu_addr);
+    if (!entry) {
+        return false;
+    }
+    // Validate the entry against this image. Any mismatch is a stale/wrong
+    // pack: ignore the entry (safe miss) rather than uploading bad data.
+    // The codec check must match the runtime's own BC1/BC3 decision.
+    const u32 skip = image.host_level_offset;
+    const u32 host_levels = static_cast<u32>(info.resources.levels) - skip;
+    if (entry->format != static_cast<u32>(info.format) || entry->width != info.size.width ||
+        entry->height != info.size.height || entry->depth != info.size.depth ||
+        entry->levels != static_cast<u32>(info.resources.levels) ||
+        entry->layers != static_cast<u32>(info.resources.layers) ||
+        entry->type != static_cast<u32>(info.type) ||
+        entry->host_level_offset != skip) {
+        LOG_WARNING(Render_Vulkan, "Offline pack entry {:#x} does not match image, ignoring",
+                    image.gpu_addr);
+        return false;
+    }
+    const bool expect_bc1 = IsOpaqueBc1Astc(device, info);
+    // Read every host level's BC file first; any failure is a safe miss.
+    // All levels are staged into one buffer, then uploaded in a single call.
+    std::vector<std::vector<u8>> level_blobs(host_levels);
+    size_t total_size = 0;
+    for (u32 h = 0; h < host_levels; ++h) {
+        const u32 g = h + skip;
+        const u32 w = std::max(info.size.width >> g, 1U);
+        const u32 hgt = std::max(info.size.height >> g, 1U);
+        const VideoCommon::OfflinePackLevel* level = nullptr;
+        for (const auto& l : entry->levels_out) {
+            if (l.level == g) {
+                level = &l;
+                break;
+            }
+        }
+        if (!level || level->width != w || level->height != hgt ||
+            level->codec != (expect_bc1 ? "bc1" : "bc3")) {
+            return false;
+        }
+        const u64 expect_size = VideoCommon::OfflinePackBcLevelSize(
+            w, hgt, info.size.depth, static_cast<u32>(info.resources.layers), expect_bc1);
+        if (level->bytes != expect_size) {
+            return false;
+        }
+        if (!offline_pack.ReadLevelFile(*level, level_blobs[h])) {
+            return false;
+        }
+        total_size += level_blobs[h].size();
+    }
+    auto staging = UploadStagingBuffer(total_size);
+    if (staging.mapped_span.size() < total_size) {
+        return false;
+    }
+    boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
+    size_t blob_offset = 0;
+    for (u32 h = 0; h < host_levels; ++h) {
+        const u32 g = h + skip;
+        const u32 w = std::max(info.size.width >> g, 1U);
+        const u32 hgt = std::max(info.size.height >> g, 1U);
+        const auto& blob = level_blobs[h];
+        std::copy(blob.begin(), blob.end(), staging.mapped_span.begin() + blob_offset);
+        copies.push_back(VideoCommon::BufferImageCopy{
+            .buffer_offset = blob_offset,
+            .buffer_size = blob.size(),
+            .buffer_row_length = Common::AlignUp(w, 4U),
+            .buffer_image_height = Common::AlignUp(hgt, 4U),
+            .image_subresource =
+                {
+                    .base_level = static_cast<s32>(h),
+                    .base_layer = 0,
+                    .num_layers = info.resources.layers,
+                },
+            .image_offset = {},
+            .image_extent =
+                {
+                    .width = w,
+                    .height = hgt,
+                    .depth = info.size.depth,
+                },
+        });
+        blob_offset += blob.size();
+    }
+    image.UploadMemory(staging, copies);
+    return true;
 }
 
 void TextureCacheRuntime::TranscodeAstcToBcn(

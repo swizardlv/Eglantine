@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/texture_cache/image_view_base.h"
+#include "video_core/texture_cache/offline_pack_loader.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -177,11 +178,20 @@ public:
     std::optional<ASTCDecoderPass> astc_decoder_pass;
     std::optional<BcEncoderPass> bc_encoder_pass;
 
+    /// Offline pack (EDEN_OFFLINE_PACK=<pack dir>): pre-transcoded ASTC ->
+    /// BC1/BC3 files, keyed by guest address. Empty when no pack is
+    /// configured; a corrupt manifest is discarded at load.
+    VideoCommon::OfflinePackLoader offline_pack;
+
     /// ASTC decoded on the GPU and re-compressed to BC1/BC3 there (accelerate_astc=Gpu with
     /// astc_recompression=Bc1/Bc3): decode into a temporary RGBA8 image, encode, copy.
     void TranscodeAstcToBcn(Image& image, const StagingBufferRef& map,
                             std::span<const VideoCommon::SwizzleParameters> swizzles,
                             std::span<const u32> target_layers = {});
+
+    /// Upload an ASTC image from the offline pack instead of transcoding it
+    /// at runtime. Returns true when the image was uploaded from the pack.
+    bool TryUploadPackedAstc(Image& image, const StagingBufferRef& map);
 
     /// Temporary decode images, freed once the GPU is past `tick`.
     struct PendingTranscode {

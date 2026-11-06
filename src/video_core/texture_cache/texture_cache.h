@@ -33,6 +33,7 @@
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
 #include "video_core/textures/decoders.h"
+#include "video_core/texture_cache/offline_capture.h"
 
 namespace VideoCommon {
 
@@ -1837,12 +1838,42 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         for (auto& upload : uploads) {
             upload.buffer_offset -= level_offset;
         }
+        if (IsPixelFormatASTC(image.info.format)) {
+            // OFFLINE_CAPTURE (EDEN_OFFLINE_CAPTURE=1): record the ASTC upload
+            // for offline transcoding. Staging still holds the swizzled guest
+            // bytes (levels >= host_level_offset only), so the offline tool
+            // must unswizzle them first (not implemented in v1).
+            OfflineCapture::RecordAstcUpload(
+                image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
+                image.info.size.height, image.info.size.depth,
+                static_cast<u32>(image.info.resources.levels),
+                static_cast<u32>(image.info.resources.layers),
+                static_cast<u32>(image.info.type), image.guest_size_bytes,
+                image.host_level_offset, image.info.astc_opaque,
+                "swizzled-tail",
+                std::span<const std::uint8_t>{
+                    mapped_span.data(),
+                    static_cast<size_t>(image.info.resources.layers) * tail});
+        }
         runtime.AccelerateImageUpload(image, staging, uploads, 0, 0);
         return;
     }
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
         gpu_memory->ReadBlock(gpu_addr, mapped_span.data(), mapped_span.size_bytes(),
                               VideoCommon::CacheType::NoTextureCache);
+        if (IsPixelFormatASTC(image.info.format)) {
+            // OFFLINE_CAPTURE: staging holds the swizzled guest bytes; the
+            // offline tool must unswizzle them first (not implemented in v1).
+            OfflineCapture::RecordAstcUpload(
+                image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
+                image.info.size.height, image.info.size.depth,
+                static_cast<u32>(image.info.resources.levels),
+                static_cast<u32>(image.info.resources.layers),
+                static_cast<u32>(image.info.type), image.guest_size_bytes,
+                image.host_level_offset, image.info.astc_opaque,
+                "swizzled",
+                std::span<const std::uint8_t>{mapped_span.data(), mapped_span.size()});
+        }
         const auto uploads = FullUploadSwizzles(image.info);
         runtime.AccelerateImageUpload(image, staging, uploads, 0, 0);
         return;
@@ -1853,6 +1884,20 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
     if (True(image.flags & ImageFlagBits::Converted)) {
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
         auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
+        if (IsPixelFormatASTC(image.info.format)) {
+            // OFFLINE_CAPTURE: unswizzle_data_buffer holds the linear ASTC
+            // block stream, ready for the offline transcoder.
+            OfflineCapture::RecordAstcUpload(
+                image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
+                image.info.size.height, image.info.size.depth,
+                static_cast<u32>(image.info.resources.levels),
+                static_cast<u32>(image.info.resources.layers),
+                static_cast<u32>(image.info.type), image.guest_size_bytes,
+                image.host_level_offset, image.info.astc_opaque,
+                "linear",
+                std::span<const std::uint8_t>{unswizzle_data_buffer.data(),
+                                              image.unswizzled_size_bytes});
+        }
         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
         if (image.host_level_offset != 0) {
             // The host image keeps only levels >= host_level_offset (TrimmedHostInfo): drop the
@@ -1870,6 +1915,18 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         image.UploadMemory(staging, copies);
     } else {
         const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);
+        if (IsPixelFormatASTC(image.info.format)) {
+            // OFFLINE_CAPTURE: mapped_span holds the linear ASTC block stream.
+            OfflineCapture::RecordAstcUpload(
+                image.gpu_addr, static_cast<u32>(image.info.format), image.info.size.width,
+                image.info.size.height, image.info.size.depth,
+                static_cast<u32>(image.info.resources.levels),
+                static_cast<u32>(image.info.resources.layers),
+                static_cast<u32>(image.info.type), image.guest_size_bytes,
+                image.host_level_offset, image.info.astc_opaque,
+                "linear",
+                std::span<const std::uint8_t>{mapped_span.data(), mapped_span.size()});
+        }
         image.UploadMemory(staging, copies);
     }
 }
