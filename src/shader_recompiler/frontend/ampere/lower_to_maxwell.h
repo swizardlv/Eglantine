@@ -34,6 +34,9 @@ struct LoweredProgram {
     std::vector<u32> source_instruction_offsets;
     u32 source_size{};
     u32 required_texture_buffer = ~0U;
+    // UR28 and up seen without a mirror: lowering again with this many registers below R216
+    // reserved for them (even, so pairs stay adjacent) maps them.
+    u32 high_uniform_registers{};
     u32 error_offset{};
     std::string_view error;
 
@@ -43,8 +46,10 @@ struct LoweredProgram {
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
-inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
+inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms) {
     LoweredProgram result;
+    // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
+    const u32 high_uniform_base = 216 - high_uniforms;
     struct Relocation { u32 output_index; s64 target; };
     std::vector<Relocation> relocations;
     std::vector<u32> barrier_tokens;
@@ -108,7 +113,7 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 && opcode != 0x987 && opcode != 0xf66 && opcode != 0x988 && opcode != 0x927) continue;
             const u32 reg = insn.Bits(bit, 8);
-            if (reg >= (uses_uniform_bank ? 216U : 246U) && reg < 255) return fail(index, "native program uses lowering scratch registers");
+            if (reg >= (uses_uniform_bank ? high_uniform_base : 246U) && reg < 255) return fail(index, "native program uses lowering scratch registers");
         }
         // TLD/TLD4 .F16 (bit 79): the components come packed in pairs, (0, 1) in Rd and (2, 3) in
         // the second destination. Lowered as the F32 form into R248/R249 and R246/R247, then packed.
@@ -124,12 +129,14 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             if (f16_second != 255) insn.words[2] = (insn.words[2] & ~0xffU) | 246U;
         }
         // UR0-UR21 live in R216-R237 and UR22-UR27 in R240-R245 (R239 holds the uniform
-        // predicates), so even/odd pairs stay adjacent. Sites that still check reg < 16 rely on
-        // UR0-UR15 being R216-R231.
+        // predicates), so even/odd pairs stay adjacent; UR28 and up below R216. Sites that
+        // still check reg < 16 rely on UR0-UR15 being R216-R231.
         const auto uniform_register = [&](u32 reg) -> u32 {
             if (reg < 22) return 216 + reg;
             if (reg < 28) return 218 + reg;
             if (reg == 63) return 255;
+            if (reg < 63 && reg - 28 < high_uniforms) return high_uniform_base + (reg - 28);
+            if (reg < 63) result.high_uniform_registers = (std::max)(result.high_uniform_registers, (reg - 26) & ~1U);
             return ~0U;
         };
         bool rewritten_uniform = false;
@@ -2700,6 +2707,16 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         if (guarded_uniform) restore_predicate(guard_mask);
     }
     return fail(static_cast<u32>(code.size()), main_exited ? "native program lacks captured library return" : "native program has no unconditional EXIT");
+}
+
+inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
+    // Programs using uniform registers above UR27 are lowered again with mirrors for them.
+    u32 high_uniforms = 0;
+    for (;;) {
+        LoweredProgram lowered = LowerToMaxwellWith(code, high_uniforms);
+        if (lowered || lowered.high_uniform_registers <= high_uniforms) return lowered;
+        high_uniforms = lowered.high_uniform_registers;
+    }
 }
 
 } // namespace Shader::Ampere
