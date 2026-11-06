@@ -186,6 +186,14 @@ Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec codec) {
         }
     }
 #endif
+    if (!m_codec && av_codec == AV_CODEC_ID_AV1) {
+        // Prefer libdav1d for AV1: the native AV1 decoder requires a hardware
+        // accelerator, which the PS5 lacks for AV1, so it returns ENOSYS on
+        // every packet. libdav1d decodes AV1 on the CPU. Fall back to the
+        // native decoder when libdav1d is not in the build (desktop with AV1
+        // HW decode).
+        m_codec = avcodec_find_decoder_by_name("libdav1d");
+    }
     if (!m_codec) {
         m_codec = avcodec_find_decoder(av_codec);
     }
