@@ -1163,6 +1163,16 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                 emit(base(0x5c28000000000000ULL) | (u64{low} << 8) | (u64{shift} << 20));
                 break;
             }
+            // SHF.R.U64 funnel with a register shift amount (Bits(73,2)==1, as in SHF.HI):
+            // the full 64-bit funnel, low 32-bit result; Maxwell SHF_r_reg with the U64
+            // clamp (bit 38).
+            if (right && !high_result && insn.Bits(73, 2) == 1 && shift != ~0U &&
+                insn.words[1] <= 255 &&
+                (insn.words[2] & ~0x000118ffU) == 0x00000200U) {
+                emit(base(0x5cf8004000000000ULL) | (u64{low} << 8) | (u64{shift} << 20) |
+                     (u64{high} << 39) | (u64{insn.Bits(75, 1)} << 50));
+                break;
+            }
             if (insn.words[1] > 255 || insn.Bits(73, 2) != 3 || shift == ~0U ||
                 (insn.words[2] & ~(0x000118ffU | (opcode == 0xc19 ? 0x08000000U : 0U))) != 0x00000600U ||
                 (right ? (!high_result || low != 255) : (high_result || high != 255)))
@@ -1401,6 +1411,14 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         }
         case 0x919: case 0x9c3: { // S2R / S2UR thread and workgroup identities.
             const u32 special = insn.Bits(72, 8);
+            if (special == 132 && !insn.words[1] && insn.words[2] == (special << 8)) {
+                // SR_VARIABLE_RATE: without variable-rate shading every fragment is 1x1, its width
+                // and height in bytes 1 and 2 (Nintendo Switch Sports Resort multiplies them).
+                const u32 target = opcode == 0x9c3 ? uniform_register(static_cast<u32>(dest)) : static_cast<u32>(dest);
+                if (target == ~0U) return fail(index, "native uniform special destination");
+                mov_imm(target, 0x00010100);
+                break;
+            }
             if (insn.words[1] || insn.words[2] != (special << 8) ||
                 (special != 0 && special != 33 && special != 34 && special != 35 &&
                  special != 37 && special != 38 && special != 39 &&
@@ -1640,6 +1658,9 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             const u32 dimension = insn.Bits(61, 3);
             const bool array = dimension == 5;
             const bool volume = dimension == 2;
+            // Bit 76: a texel offset after the coordinates. 2D only, as Maxwell TLDS
+            // 2D.LZ.AOFFI (x, y in Ra, Ra+1, offsets in Rb).
+            const bool offsets = insn.Bits(76, 1) != 0;
             u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const u32 second_dest = insn.Bits(64, 8);
             const bool split = second_dest != 255;
@@ -1652,7 +1673,9 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                 for (u32 i = 0; i < rg_masks.size(); ++i) if (rg_masks[i] == mask) swizzle = i;
             }
             if (!insn.Bits(60, 1) || (dimension != 0 && dimension != 1 && !array && !volume) ||
-                swizzle == ~0U || insn.Bits(76, 5) ||
+                swizzle == ~0U || (insn.Bits(76, 5) & ~1U) ||
+                (offsets && (dimension != 1 || (source_a & 1) || source_a >= 254 ||
+                            source_b == 255)) ||
                 insn.Bits(81, 3) != 7 || insn.Bits(87, 3) != 1 ||
                 insn.Bits(59, 1) ||
                 insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
@@ -1673,7 +1696,7 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             emit(0xda00000000000000ULL | predicate | dest | (u64{source_a} << 8) |
                  (u64{source_b} << 20) | (u64{insn.Bits(64, 8)} << 28) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
-                 (u64{swizzle} << 50) | (u64{array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
+                 (u64{swizzle} << 50) | (u64{offsets ? 4U : array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
             break;
         }
         case 0x91a: // DEPBAR.LE SB5, 1: scoreboard wait, represented by IR data dependencies.
