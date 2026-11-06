@@ -156,7 +156,7 @@ void Impl(TranslatorVisitor& v, u64 insn, bool aoffi, Blod blod, bool lc,
     IR::F32 dref;
     IR::F32 lod_clamp;
     if (cbuf_offset) {
-        handle = ResolveTextureHandle(v.ir, *cbuf_offset);
+        handle = v.ir.Imm32(*cbuf_offset);
     } else {
         handle = v.X(meta_reg++);
     }

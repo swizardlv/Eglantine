@@ -56,22 +56,6 @@ enum class FPCompareOp : u64 {
     T,
 };
 
-// Resolve a texture descriptor handle from a Maxwell TEX/TLD4/TLD/TXQ
-// cbuf_offset (already multiplied by 4 to a byte offset). The Ampere
-// lowering may encode an explicit constant-buffer bank in the offset:
-// bit 14 = explicit-bank flag, bits 12-13 = bank, bits 0-11 = byte offset.
-// In that case return a GetCbuf(bank, byte_offset) so the backend's
-// texture-descriptor tracking resolves the descriptor in the right bank;
-// otherwise return the plain immediate offset as before.
-[[nodiscard]] inline IR::U32 ResolveTextureHandle(IR::IREmitter& ir, u32 encoded_byte_offset) {
-    if ((encoded_byte_offset & 0x4000U) != 0) {
-        const u32 bank = (encoded_byte_offset >> 12) & 0x3U;
-        const u32 byte_offset = encoded_byte_offset & 0xfffU;
-        return ir.GetCbuf(ir.Imm32(bank), ir.Imm32(byte_offset));
-    }
-    return ir.Imm32(encoded_byte_offset);
-}
-
 struct TranslatorVisitor {
     explicit TranslatorVisitor(Environment& env_, IR::Block& block) : env{env_}, ir(block) {}
     Environment& env;

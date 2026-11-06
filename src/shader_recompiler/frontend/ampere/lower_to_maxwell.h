@@ -43,13 +43,6 @@ struct LoweredProgram {
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
-// Encode an Ampere texture descriptor (bank, word offset) into the 13-bit
-// Maxwell TEX cbuf_offset field. Bit 12 = explicit-bank flag, bits 10-11 =
-// bank (0-3), bits 0-9 = word offset (0-1023). Real offsets here are <= 0xff.
-constexpr u64 EncodeTexBankOffset(u64 bank, u64 offset_words) {
-    return 0x1000ULL | ((bank & 0x3ULL) << 10) | (offset_words & 0x3ffULL);
-}
-
 inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     LoweredProgram result;
     struct Relocation { u32 output_index; s64 target; };
@@ -1587,7 +1580,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 return fail(index, "native texture dimension query mode");
             result.required_texture_buffer = insn.Bits(54, 5);
             emit(0xdf48000000000000ULL | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
-                 (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) |
+                 (u64{1} << 22) | (u64{insn.Bits(72, 4)} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49));
             break;
         }
@@ -1628,7 +1621,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             emit(0xda00000000000000ULL | predicate | dest | (u64{source_a} << 8) |
                  (u64{source_b} << 20) | (u64{insn.Bits(64, 8)} << 28) |
-                 (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                 (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
                  (u64{swizzle} << 50) | (u64{array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
             break;
         }
@@ -1664,7 +1657,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             if (bindless) emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{handle} << 20));
             emit((bindless ? 0xdf60000000000000ULL : 0xdf58000000000000ULL) | predicate | 250 | (u64{250} << 8) |
                  (u64{bindless ? 246U : 255U} << 20) | (u64{dimension * 2} << 28) | (u64{mask} << 31) |
-                 (u64{bindless ? 0U : EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14))} << 36) | (u64{insn.Bits(90, 1)} << 49));
+                 (u64{bindless ? 0U : insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49));
             const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
             for (u32 i = 0; i < components; ++i) {
@@ -1695,7 +1688,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 emit(0x5c98000000000000ULL | predicate | 246 | (u64{15} << 39) | (u64{source_b} << 20));
             }
             emit(0xc800000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{depth ? 246U : 255U} << 20) |
-                 (u64{2} << 28) | (u64{mask} << 31) | (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) |
+                 (u64{2} << 28) | (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{depth} << 50) | (u64{7} << 51) | (u64{insn.Bits(87, 2)} << 56));
             const u32 components = static_cast<u32>(std::popcount(mask));
             const bool split = second_dest != 255;
@@ -1731,7 +1724,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 }
                 emit(0xc000000000000000ULL | predicate | dest | (u64{250} << 8) |
                      (u64{source_b + 1} << 20) | (u64{3} << 28) | (u64{1} << 31) |
-                     (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
                      (u64{1} << 50) | (u64{7} << 51));
                 break;
             }
@@ -1773,7 +1766,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 if (depth_compare) copy(meta++, value(next++));
                 emit(0xc000000000000000ULL | predicate | 250 | (u64{250} << 8) |
                      (u64{meta == 246 ? 255U : 246U} << 20) | (u64{maxwell_type[dimension]} << 28) |
-                     (u64{mask} << 31) | (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) |
+                     (u64{mask} << 31) | (u64{insn.Bits(40, 14)} << 36) |
                      (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51) |
                      (u64{offsets} << 54) | (u64{lod} << 55));
                 const u32 components = static_cast<u32>(std::popcount(mask));
@@ -1826,7 +1819,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             result.required_texture_buffer = insn.Bits(54, 5);
             emit((0xd800000000000000ULL & ~(u64{insn.Bits(79, 1)} << 59)) | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{insn.Bits(32, 8)} << 20) | (u64{insn.Bits(64, 8)} << 28) |
-                 (EncodeTexBankOffset(insn.Bits(54, 5), insn.Bits(40, 14)) << 36) | (u64{insn.Bits(90, 1)} << 49) |
+                 (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
                  (u64{swizzle} << 50) | (u64{dimension == 5 ? (lod ? 8U : 7U) : depth_compare ? (lod ? 6U : 4U) : (lod == 3 ? 3U : lod ? 2U : 1U)} << 53));
             break;
         }

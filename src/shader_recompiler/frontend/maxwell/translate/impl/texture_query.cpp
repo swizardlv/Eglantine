@@ -43,7 +43,7 @@ void Impl(TranslatorVisitor& v, u64 insn, std::optional<u32> cbuf_offset) {
     IR::Reg src_reg{txq.src_reg};
     IR::U32 handle;
     if (cbuf_offset) {
-        handle = ResolveTextureHandle(v.ir, *cbuf_offset);
+        handle = v.ir.Imm32(*cbuf_offset);
     } else {
         handle = v.X(src_reg);
         ++src_reg;
