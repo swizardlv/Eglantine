@@ -516,6 +516,35 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
             break;
         }
+        case 0x825: { // IMAD.WIDE.U32 with 32-bit immediate (GPR): R(d):R(d+1) = Ra * imm + Rc:R(c+1)
+            // GPR counterpart of 0x8a5 (0x825 + 0x80 == 0x8a5). Same base-2^16 XMAD
+            // sequence, but operands are plain GPR numbers and words[2] high bits
+            // are 0x078e0000 (bit 91 clear) instead of 0x0f8e0000. srcC here is a
+            // real 64-bit addend (e.g. R26:R27), not RZ.
+            const u32 a = insn.Bits(24, 8);
+            const u32 b = insn.words[1];
+            const u32 c = insn.Bits(64, 8);
+            const u32 c_low = c, c_high = c == 63 ? 255U : c + 1;
+            const u32 d_low = insn.Bits(16, 8), d_high = insn.Bits(16, 8) + 1;
+            if (native_predicate != 7 || (insn.words[2] & ~0xffU) != 0x078e0000 ||
+                (insn.Bits(16, 8) & 1) || (c != 63 && (c & 1)) ||
+                d_low == 255 || d_high >= 254 || c_low >= 254 || c_high >= 254)
+                return fail(index, "native wide multiply immediate mode");
+            xmad(250, a, b, 255, false, false, 0, true);
+            xmad(251, a, b, 250, true, false, 2, true);
+            xmad(250, a, b, 251, false, true, 1, true);
+            xmad(252, a, b, 251, true, true, 2, true);
+            emit(0x3828000000070000ULL | 250 | (u64{250} << 8) | (u64{16} << 20));
+            emit(0x5c10000000070000ULL | 253 | (u64{250} << 8) | (u64{252} << 20));
+            xmad(250, a, b, 255, false, false, 0, true);
+            xmad(251, a, b, 255, true, false, 0, true);
+            xmad(251, a, b, 251, false, true, 0, true);
+            emit(0x5c18000000070000ULL | 250 | (u64{251} << 8) | (u64{250} << 20) | (u64{16} << 39));
+            emit(0x5c10000000070000ULL | 250 | (u64{250} << 8) | (u64{c_low} << 20) | (u64{1} << 47));
+            emit(0x5c10000000070000ULL | d_high | (u64{253} << 8) | (u64{c_high} << 20) | (u64{1} << 43));
+            emit(0x5c10000000070000ULL | d_low | (u64{250} << 8) | (u64{255} << 20));
+            break;
+        }
         case 0x8a5: { // IMAD.WIDE.U32 with 32-bit immediate: UR(d):UR(d+1) = URa * imm + URc:UR(c+1)
             // Same shape as 0x2a5 (UIMAD.WIDE), but the multiplier is the 32-bit immediate
             // in words[1], not a uniform register. The game's video compute shaders use
@@ -1678,7 +1707,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             }
             break;
         }
-        case 0xb60: { // TEX, scalar 2D implicit-LOD sample
+        case 0xb60: case 0xf60: { // TEX, scalar 2D implicit-LOD sample (0xf60: bit 10 mode ext)
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
             constexpr std::array<u32, 8> rg_masks{1, 2, 4, 8, 3, 9, 10, 12};
@@ -1794,7 +1823,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 if (!general_tex()) return fail(index, "native texture mode or descriptor binding");
                 break;
             }
-            result.required_texture_buffer = 2;
+            result.required_texture_buffer = insn.Bits(54, 5);
             emit((0xd800000000000000ULL & ~(u64{insn.Bits(79, 1)} << 59)) | predicate | dest | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{insn.Bits(32, 8)} << 20) | (u64{insn.Bits(64, 8)} << 28) |
                  (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) |
