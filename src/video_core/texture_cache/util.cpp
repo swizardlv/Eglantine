@@ -11,6 +11,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <mutex>
 #include <cstring>
 #include <numeric>
 #include <optional>
@@ -22,6 +26,7 @@
 #include "common/bit_util.h"
 #include "common/common_types.h"
 #include "common/div_ceil.h"
+#include "common/logging.h"
 #include "common/scratch_buffer.h"
 #include "common/settings.h"
 #include "video_core/compatible_formats.h"
@@ -1160,8 +1165,76 @@ void ConvertedLayout(const ImageInfo& info, std::span<BufferImageCopy> copies) {
     }
 }
 
+// ASTC_CPU_DIAG (EDEN_ASTC_PATH_DIAG=1): every CPU ASTC decode (sync or async worker): which
+// textures, how many and how long. Investigation of why ASTC ever takes the CPU path.
+namespace {
+bool AstcPathDiag() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_ASTC_PATH_DIAG");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
+struct AstcCpuStats {
+    std::mutex mutex;
+    u64 calls{};
+    u64 texels{};
+    double ms{};
+    double max_ms{};
+    u64 logged{};
+    std::chrono::steady_clock::time_point last_summary{std::chrono::steady_clock::now()};
+};
+AstcCpuStats& AstcCpuStatsInstance() {
+    static AstcCpuStats stats;
+    return stats;
+}
+} // Anonymous namespace
+
+static void ConvertImageImpl(std::span<const u8> input, const ImageInfo& info,
+                             std::span<u8> output, std::span<BufferImageCopy> copies);
+
 void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8> output,
                   std::span<BufferImageCopy> copies) {
+    if (!AstcPathDiag() || !IsPixelFormatASTC(info.format)) {
+        ConvertImageImpl(input, info, output, copies);
+        return;
+    }
+    u64 texels = 0;
+    for (const BufferImageCopy& copy : copies) {
+        texels += u64{copy.image_extent.width} * copy.image_extent.height *
+                  copy.image_extent.depth * copy.image_subresource.num_layers;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    ConvertImageImpl(input, info, output, copies);
+    const auto now = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(now - start).count();
+    auto& stats = AstcCpuStatsInstance();
+    std::scoped_lock lock{stats.mutex};
+    ++stats.calls;
+    stats.texels += texels;
+    stats.ms += ms;
+    stats.max_ms = (std::max)(stats.max_ms, ms);
+    if (stats.logged < 400) {
+        ++stats.logged;
+        LOG_WARNING(HW_GPU,
+                    "ASTC_CPU_DECODE fmt={} type={} size={}x{}x{} layers={} levels={} texels={} "
+                    "ms={:.2f} recompression={} decode_mode={} opaque={}",
+                    static_cast<u32>(info.format), static_cast<u32>(info.type), info.size.width,
+                    info.size.height, info.size.depth, info.resources.layers,
+                    info.resources.levels, texels, ms,
+                    static_cast<u32>(Settings::GetAstcRecompression()),
+                    static_cast<u32>(Settings::values.accelerate_astc.GetValue()),
+                    info.astc_opaque);
+    }
+    if (now - stats.last_summary >= std::chrono::seconds{5}) {
+        stats.last_summary = now;
+        LOG_WARNING(HW_GPU, "ASTC_CPU_SUMMARY calls={} mtexels={:.1f} total_ms={:.0f} max_ms={:.1f}",
+                    stats.calls, stats.texels / 1e6, stats.ms, stats.max_ms);
+    }
+}
+
+static void ConvertImageImpl(std::span<const u8> input, const ImageInfo& info,
+                             std::span<u8> output, std::span<BufferImageCopy> copies) {
     u32 output_offset = 0;
     Common::ScratchBuffer<u8> decode_scratch;
 

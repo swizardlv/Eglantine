@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <unordered_map>
 #include <vector>
 #include <optional>
 #include <bit>
@@ -204,6 +205,104 @@ void TextureCache<P>::RunGarbageCollector() {
             gpu_sentenced_images.pop_front();
         }
     }
+    // Cold blocks given back whole. Collecting image by image leaves the device memory blocks
+    // partly used (new images land in the holes), and on the console a partly used block holds a
+    // stretch of the pool the CPU and the GPU share: the pool ends up in pieces too small for the
+    // driver's next 64 MiB block or the JIT's next 16 MiB step, with hundreds of MiB free in holes
+    // (Mario Kart World's title, with the guest's cold memory compressed). So while memory is
+    // critical, the emptiest blocks whose images were all left unused for EDEN_NX2_TC_COLD_FRAMES
+    // frames (default 120) have every image evicted, a few blocks every 30 frames, and go back to
+    // the driver whole. EDEN_NX2_TC_COLD_BLOCKS=<n> (default 4, 0: off) blocks a pass.
+    if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
+        static const u64 cold_frames = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_COLD_FRAMES");
+            return value != nullptr ? std::strtoull(value, nullptr, 10) : 120ULL;
+        }();
+        static const size_t cold_blocks = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_COLD_BLOCKS");
+            return value != nullptr ? static_cast<size_t>(std::strtoull(value, nullptr, 10)) : size_t{4};
+        }();
+        // EDEN_NX2_TC_COLD_FILL=<percent> (default 60): only blocks less full than this. With
+        // EDEN_NX2_TC_COLD_FRAMES=0 a block goes even with images in use: they are made again from the
+        // guest's memory when next drawn, in fuller blocks (a defragmentation by eviction).
+        static const u64 cold_fill = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_COLD_FILL");
+            return value != nullptr ? std::strtoull(value, nullptr, 10) : 60ULL;
+        }();
+        static u64 cold_pass_frame = 0;
+        if (cold_blocks != 0 && total_used_memory >= critical_memory && frame_tick >= cold_pass_frame + 30) {
+            cold_pass_frame = frame_tick;
+            struct BlockUse {
+                u64 used = 0, size = 0, youngest = 0;
+                bool pinned = false;
+                std::vector<ImageId> images;
+            };
+            std::unordered_map<u64, BlockUse> blocks;
+            for (const auto [image_id, image] : slot_images) {
+                const auto block = image->MemoryBlock();
+                if (block.block == 0 || block.block_size == 0) continue;
+                auto& use = blocks[block.block];
+                use.used += block.size;
+                use.size = block.block_size;
+                use.images.push_back(image_id);
+                // A block with an image the GPU wrote (it would have to be read back first), one being
+                // decoded or one not registered stays.
+                if (False(image->flags & ImageFlagBits::Registered) || True(image->flags & ImageFlagBits::IsDecoding) ||
+                    (IsDownloadable(*image) && False(image->flags & ImageFlagBits::BadOverlap))) {
+                    use.pinned = true;
+                } else {
+                    use.youngest = (std::max)(use.youngest, lru_cache.Tick(image->lru_index));
+                }
+            }
+            std::vector<std::pair<u64, u64>> candidates; // (used, block)
+            {   // TEMPORARY: why blocks are or are not given back
+                size_t pinned = 0, cold = 0, sparse = 0, both = 0, images_in_blocks = 0;
+                u64 used_total = 0, size_total = 0, age_min = ~0ULL;
+                for (const auto& [block, use] : blocks) {
+                    pinned += use.pinned;
+                    const bool is_cold = !use.pinned && use.youngest + cold_frames <= frame_tick;
+                    const bool is_sparse = use.used * 10 < use.size * 6;
+                    cold += is_cold;
+                    sparse += is_sparse;
+                    both += is_cold && is_sparse;
+                    images_in_blocks += use.images.size();
+                    used_total += use.used;
+                    size_total += use.size;
+                    if (!use.pinned) age_min = (std::min)(age_min, frame_tick - use.youngest);
+                }
+                LOG_WARNING(HW_GPU, "MKW_COLD_BLOCKS frame={} blocks={} images={} used={}MiB of {}MiB pinned={} cold={} under60={} both={} youngest_block_age={}",
+                            frame_tick, blocks.size(), images_in_blocks, used_total >> 20, size_total >> 20, pinned, cold,
+                            sparse, both, age_min);
+            }
+            for (const auto& [block, use] : blocks) {
+                if (!use.pinned && use.youngest + cold_frames <= frame_tick && use.used * 100 < use.size * cold_fill) {
+                    candidates.emplace_back(use.used, block);
+                }
+            }
+            std::sort(candidates.begin(), candidates.end());
+            if (candidates.size() > cold_blocks) candidates.resize(cold_blocks);
+            for (const auto& [used, block] : candidates) {
+                for (const ImageId image_id : blocks[block].images) {
+                    auto& image = slot_images[image_id];
+                    if (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap)) {
+                        auto map = runtime.DownloadStagingBuffer(image.unswizzled_size_bytes);
+                        const auto copies = FullDownloadCopies(image.info);
+                        image.DownloadMemory(map, copies);
+                        runtime.Finish();
+                        SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, map.mapped_span, swizzle_data_buffer);
+                        ++gc_download_deletes;
+                    }
+                    if (True(image.flags & ImageFlagBits::Tracked)) {
+                        UntrackImage(image, image_id);
+                    }
+                    ++gc_cold_block_images;
+                    UnregisterImage(image_id);
+                    DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+                }
+                ++gc_cold_blocks;
+            }
+        }
+    }
 }
 
 template <class P>
@@ -354,6 +453,9 @@ void TextureCache<P>::TickFrame() {
                  images_created, images_deleted, gc_deletes + gc_costly_deletes, gc_costly_deletes,
                  gc_download_deletes,
                  async_decodes_queued, astc_opaque_images, astc_alpha_images);
+        LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} cold blocks given back whole ({} images)",
+                 gc_cold_blocks, gc_cold_block_images);
+        gc_cold_blocks = gc_cold_block_images = 0;
         LOG_INFO(HW_GPU, "Texture cache last 600 frames: {} uploads from guest memory, {} MiB (largest {} MiB, {} by layer)",
                  images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
         images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
@@ -1752,6 +1854,19 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
         auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, unswizzle_data_buffer);
         ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
+        if (image.host_level_offset != 0) {
+            // The host image keeps only levels >= host_level_offset (TrimmedHostInfo): drop the
+            // copies of the levels it does not have, and host level 0 is that guest level.
+            const s32 skip = static_cast<s32>(image.host_level_offset);
+            copies.erase(std::remove_if(copies.begin(), copies.end(),
+                                        [skip](const BufferImageCopy& copy) {
+                                            return copy.image_subresource.base_level < skip;
+                                        }),
+                         copies.end());
+            for (BufferImageCopy& copy : copies) {
+                copy.image_subresource.base_level -= skip;
+            }
+        }
         image.UploadMemory(staging, copies);
     } else {
         const auto copies = UnswizzleImage(*gpu_memory, gpu_addr, image.info, swizzle_data, mapped_span);

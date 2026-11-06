@@ -52,6 +52,14 @@ public:
         Attach(item);
     }
 
+    /// Last-use tick of an item (0 when it was never inserted).
+    [[nodiscard]] TickType Tick(size_t id) const noexcept {
+        if (id >= item_pool.size()) {
+            return TickType{};
+        }
+        return item_pool[id].tick;
+    }
+
     void Free(size_t id) {
         auto& item = item_pool[id];
         Detach(item);

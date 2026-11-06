@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <array>
 #include <cstdlib>
@@ -337,7 +338,15 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
     const bool huge_bcn = IsHugeBcnArray(info);
-    if ((!WillUseAcceleratedAstcDecode(device, info) && !huge_bcn) || info.type != ImageType::e2D) {
+    // ASTC decoded and re-compressed on the CPU takes the size cap too when it is lowered
+    // (EDEN_NS2_MAX_TEXTURE): the upload drops the levels the host image does not keep.
+    static const bool cap_lowered = [] {
+        const char* value = std::getenv("EDEN_NS2_MAX_TEXTURE");
+        return value != nullptr && std::strtoul(value, nullptr, 10) < 2048;
+    }();
+    const bool cpu_astc = cap_lowered && IsPixelFormatASTC(info.format) && !device.IsOptimalAstcSupported() &&
+                          info.size.depth == 1 && info.resources.layers == 1;
+    if ((!WillUseAcceleratedAstcDecode(device, info) && !huge_bcn && !cpu_astc) || info.type != ImageType::e2D) {
         return info;
     }
     const u64 max_bytes = []() -> u64 {
@@ -369,11 +378,31 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         }
         return bytes * info.resources.layers;
     };
-    if (decoded_bytes(0) <= max_bytes) {
+    // EDEN_NS2_MAX_TEXTURE=<texels> lowers the cap (1024, 512) where video memory is short.
+    static const u32 MaxNativeSize = [] {
+        const char* value = std::getenv("EDEN_NS2_MAX_TEXTURE");
+        const unsigned long size = value != nullptr ? std::strtoul(value, nullptr, 10) : 0;
+        return size >= 256 && size <= 2048 ? static_cast<u32>(size) : 2048U;
+    }();
+    // Switch 2 ASTC textures decoded on the GPU keep at most 2048 texels a side: a 4K texture is
+    // held from its next mip level on (a quarter of the video memory and decode work). The game's
+    // own mips are used, so nothing is resampled.
+    const bool over_texel_cap =
+        (std::max)(info.size.width, info.size.height) > MaxNativeSize;
+    if (decoded_bytes(0) <= max_bytes && !over_texel_cap) {
         return info;
     }
+    if (!cpu_astc) {
+        // The byte trim assumes an RGBA8 host image (GPU decode); a CPU-decoded image takes
+        // only the texel cap below.
+        while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+               decoded_bytes(level_offset) > max_bytes) {
+            ++level_offset;
+        }
+    }
     while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
-           decoded_bytes(level_offset) > max_bytes) {
+           (std::max)(info.size.width >> level_offset, info.size.height >> level_offset) >
+               MaxNativeSize) {
         ++level_offset;
     }
     ImageInfo host = info;
@@ -2245,6 +2274,44 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         }
         flags |= VideoCommon::ImageFlagBits::Converted;
         flags |= VideoCommon::ImageFlagBits::CostlyLoad;
+    }
+    if (IsPixelFormatASTC(info.format) && !runtime->device.IsOptimalAstcSupported()) {
+        // ASTC_PATH (EDEN_ASTC_PATH_DIAG=1): which decode path each new ASTC image takes.
+        static const bool diag = [] {
+            const char* value = std::getenv("EDEN_ASTC_PATH_DIAG");
+            return value != nullptr && value[0] == '1';
+        }();
+        if (diag) {
+            static std::atomic<u64> counts[5]{};
+            const bool huge = IsHugeAstcArray(runtime->device, info);
+            const bool gpu_rgba = WillUseAcceleratedAstcDecode(runtime->device, info);
+            const bool gpu_bcn = WillUseGpuBcnTranscode(runtime->device, info);
+            const bool accelerated = True(flags & VideoCommon::ImageFlagBits::AcceleratedUpload);
+            const bool async = True(flags & VideoCommon::ImageFlagBits::AsynchronousDecode);
+            const u32 path = huge ? 0 : gpu_bcn && accelerated ? 1 : gpu_rgba && accelerated ? 2
+                           : async ? 3 : 4;
+            static constexpr const char* names[5]{"gpu_huge_rgba", "gpu_bcn", "gpu_rgba",
+                                                  "cpu_async", "cpu_sync"};
+            const u64 n = ++counts[path];
+            const u64 total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4];
+            if (path >= 3 && n <= 300) {
+                LOG_WARNING(Render_Vulkan,
+                            "ASTC_PATH path={} gpu=0x{:x} fmt={} type={} size={}x{}x{} layers={} "
+                            "levels={} decode_mode={} recompression={} gpu_rgba={} gpu_bcn={}",
+                            names[path], gpu_addr, static_cast<u32>(info.format),
+                            static_cast<u32>(info.type), info.size.width, info.size.height,
+                            info.size.depth, info.resources.layers, info.resources.levels,
+                            static_cast<u32>(Settings::values.accelerate_astc.GetValue()),
+                            static_cast<u32>(Settings::GetAstcRecompression()), gpu_rgba, gpu_bcn);
+            }
+            if (total % 200 == 0) {
+                LOG_WARNING(Render_Vulkan,
+                            "ASTC_PATH_SUMMARY total={} gpu_huge_rgba={} gpu_bcn={} gpu_rgba={} "
+                            "cpu_async={} cpu_sync={}",
+                            total, counts[0].load(), counts[1].load(), counts[2].load(),
+                            counts[3].load(), counts[4].load());
+            }
+        }
     }
     if (IsPixelFormatBCn(info.format) && !runtime->device.IsOptimalBcnSupported()) {
         flags |= VideoCommon::ImageFlagBits::Converted;
