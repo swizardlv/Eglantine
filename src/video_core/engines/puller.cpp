@@ -43,7 +43,7 @@ u32 ReadSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address) {
                                            VideoCommon::CacheType::BufferCache);
     }
     const u32 memory = dma_pusher.memory_manager.Read<u32>(address);
-    return memory;
+    return device ? Nx2SemaphoreWaiters::Get().Read(*device, memory) : memory;
 }
 
 // With the GPU thread split (gpu_split.h) the rasterizer belongs to the back thread: work that
