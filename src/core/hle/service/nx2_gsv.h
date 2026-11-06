@@ -304,10 +304,7 @@ public:
             {21, &INx2GpuSession::Start, "Start (guessed)"},
             {22, &INx2GpuSession::OpenSubSession, "OpenSubSession (guessed)"},
             {33, &INx2GpuSession::GetCount33, "Unknown33 (u32 count)"},
-            // 41 CreateGraphicsDevice deliberately UNREGISTERED (2026-11-06): build32 proved
-            // even a stub-equivalent reply (success, no handle) kills Ocarina <1ms after the
-            // call, while build27 (auto-stub) passed. Leave auto-stubbed until the real
-            // trigger is found; the handler below stays as documentation only.
+            {41, &INx2GpuSession::CreateGraphicsDevice, "CreateGraphicsDevice"},
             {201, &INx2GpuSession::GetUserPartition, "GetUserPartition (newer SDKs)"},
             {202, &INx2GpuSession::GetGsvPartition, "GetGsvPartition (newer SDKs)"},
             {203, &INx2GpuSession::GetVaRange, "GetVaRange (guessed)"},
@@ -375,16 +372,17 @@ private:
     }
 
     // 41 (Switch 2 GpuSession CreateGraphicsDevice): NvRm passes the NvRm/GPu magic in
-    // words 2-3. build31 PROVED a session handle in the reply kills the guest: Ocarina
-    // (7.8s) and Yoshi (9.37s) both PANIC <1ms after ReturnRawSession returned, while on
-    // build27 (auto-stub: success, no handle) both games passed this point. The real reply
-    // shape is undocumented on SwitchBrew; until it is known, return success with NO
-    // handle (auto-stub equivalent) and keep the log line. gsv 434 stays as-is.
+    // words 2-3. Returns a fresh GraphicsDevice session, like OpenGpuSession (gsv 497)
+    // hands out a fresh INx2GpuSession. build31 returned the SAME session
+    // (shared_from_this()) and the "handle kills the guest" reading was contaminated by
+    // the stale deploy location (the live copy was never build31), so it was never a
+    // real test. build33 (auto-stub, no handle) let Yoshi pass gpu41 but it died 28ms
+    // later dereferencing a null GraphicsDevice (0x2a2, pc 0x8dd34ae0), so the game does
+    // want a session here; give it a new one.
     void CreateGraphicsDevice(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
         LOG_INFO(Service, "nx2:gpu TIPC 41 CreateGraphicsDevice magic {:#x} {:#x}", w[2], w[3]);
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+        ReturnRawSession(system, ctx, std::make_shared<INx2GpuSession>(system));
     }
 
     // Used by nn::gpu::sdk::CreateGpuAddressSpace: three u64s after the result, a kind (< 5, 0 =
@@ -2364,7 +2362,14 @@ private:
     // as nx2-vdec-<frame>.pgm (to check what the decoder wrote, apart from how the game shows it).
     void DumpFrame(const std::vector<u8>& bytes, const Nx2DecoderImageLayout& layout, u32 width,
                    u32 height) {
-        static const char* const directory = std::getenv("EDEN_NX2_VDEC_DUMP");
+        // DIAGNOSTIC (build35, revert after the Ocarina black-frame check): the env var
+        // is not settable from the PS5 UI, so fall back to a fixed dir on the console.
+        static const char* const directory = [] {
+            if (const char* env = std::getenv("EDEN_NX2_VDEC_DUMP")) {
+                return env;
+            }
+            return "/data/eglantineps5/vdec-dump";
+        }();
         if (directory == nullptr || (m_frames_out % 120) != 0) {
             return;
         }
