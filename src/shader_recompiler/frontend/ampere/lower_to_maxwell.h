@@ -2290,7 +2290,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 }
                 break;
             }
-            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) || (insn.Bits(81, 3) != 7 && insn.Bits(81, 3) != 0) ||
+            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
                 (opcode == 0x211 && insn.Bits(62, 1))) return fail(index, "native LEA carry/high mode");
             // 0x211 bit 63 negates Rb (LEA Rd, Ra, -Rb, s), as Maxwell ISCADD's bit 48.
             u32 b = insn.Bits(32, 8);
