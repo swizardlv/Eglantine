@@ -32,6 +32,7 @@
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/macro.h"
+#include "video_core/query_dma_wait.h"
 
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -1432,7 +1433,11 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                             }
                         }
                     }
-                    if (memory.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+                    if (memory.IsMemoryDirty(source, read_bytes,
+                        VideoCommon::CacheType::BufferCache | VideoCommon::CacheType::QueryCache)) {
+                        // Reports still waiting for host results are waited for (Lichii #215).
+                        VideoCommon::QueryDma::FlushPending(memory, maxwell3d.Rasterizer(), source,
+                                                            read_bytes);
                         memory.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
                         static u64 flushes{};
                         if (++flushes % 2000 == 1) {

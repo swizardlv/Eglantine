@@ -291,6 +291,11 @@ DecoderContext::DecoderContext(const Decoder& decoder) : m_decoder{decoder} {
     m_codec_context = avcodec_alloc_context3(m_decoder.GetCodec());
     av_opt_set(m_codec_context->priv_data, "tune", "zerolatency", 0);
     m_codec_context->thread_count = 0;
+    // AV1 via libdav1d: four threads (single-threaded libgav1 managed only 43/60 FPS;
+    // the guest cores keep the rest of the CPU).
+    if (m_decoder.GetCodec() && m_decoder.GetCodec()->id == AV_CODEC_ID_AV1) {
+        m_codec_context->thread_count = 4;
+    }
     m_codec_context->thread_type &= ~FF_THREAD_FRAME;
 #if defined(__ANDROID__)
     m_codec_context->flags |= AV_CODEC_FLAG_LOW_DELAY;

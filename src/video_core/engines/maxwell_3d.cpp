@@ -18,6 +18,7 @@
 #include "video_core/dirty_flags.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/query_dma_wait.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_split.h"
 #include "video_core/memory_manager.h"
@@ -1117,7 +1118,10 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     if (VideoCommon::Nx2Profile::Enabled()) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
-    if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
+    if (memory_manager.IsMemoryDirty(source, read_bytes,
+                        VideoCommon::CacheType::BufferCache | VideoCommon::CacheType::QueryCache)) {
+        // Reports still waiting for host results are waited for (Lichii #215).
+        VideoCommon::QueryDma::FlushPending(memory_manager, *rasterizer, source, read_bytes);
         memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
     }
     for (u32 i = 0; i < words; ++i) {

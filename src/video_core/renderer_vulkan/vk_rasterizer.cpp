@@ -13,6 +13,8 @@
 #include <set>
 #include <fstream>
 #include <mutex>
+#include <chrono>
+#include <condition_variable>
 
 #include <fmt/format.h>
 
@@ -580,7 +582,10 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
             });
             return;
         }
-        scheduler.Record([draw_params](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, draw_params](vk::CommandBuffer cmdbuf) {
+            if (scheduler.GraphicsPipelineMissing()) {
+                return;
+            }
             if (draw_params.is_indexed) {
                 cmdbuf.DrawIndexed(draw_params.num_vertices, draw_params.num_instances,
                                    draw_params.first_index, draw_params.base_vertex,
@@ -624,8 +629,11 @@ void RasterizerVulkan::DrawIndirect() {
         const auto& buffer = indirect_buffer.first;
         const auto& offset = indirect_buffer.second;
         if (params.is_byte_count) {
-            scheduler.Record([buffer_obj = buffer->Handle(), offset,
+            scheduler.Record([this, buffer_obj = buffer->Handle(), offset,
                               stride = params.stride](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 cmdbuf.DrawIndirectByteCountEXT(1, 0, buffer_obj, offset, 0,
                                                 static_cast<u32>(stride));
             });
@@ -635,9 +643,12 @@ void RasterizerVulkan::DrawIndirect() {
             const auto count = buffer_cache.GetDrawIndirectCount();
             const auto& draw_buffer = count.first;
             const auto& offset_base = count.second;
-            scheduler.Record([draw_buffer_obj = draw_buffer->Handle(),
+            scheduler.Record([this, draw_buffer_obj = draw_buffer->Handle(),
                               buffer_obj = buffer->Handle(), offset_base, offset,
                               params](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
                 if (params.is_indexed) {
                     cmdbuf.DrawIndexedIndirectCount(
                         buffer_obj, offset, draw_buffer_obj, offset_base,
@@ -650,7 +661,10 @@ void RasterizerVulkan::DrawIndirect() {
             });
             return;
         }
-        scheduler.Record([buffer_obj = buffer->Handle(), offset, params](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([this, buffer_obj = buffer->Handle(), offset, params](vk::CommandBuffer cmdbuf) {
+            if (scheduler.GraphicsPipelineMissing()) {
+                return;
+            }
             if (params.is_indexed) {
                 cmdbuf.DrawIndexedIndirect(buffer_obj, offset,
                                            static_cast<u32>(params.max_draw_counts),
@@ -1196,6 +1210,37 @@ void RasterizerVulkan::SignalReference() {
 void RasterizerVulkan::ReleaseFences(bool force) {
     fence_manager.WaitPendingFences(force);
 }
+void RasterizerVulkan::FlushQueryResults(DAddr addr, u64 size) {
+    if (addr == 0 || size == 0 || !query_cache.SemiFlushRegion(addr, size)) {
+        return;
+    }
+    // ReleaseFences does not wait here: unless fences are delayed (High GPU accuracy), a fence
+    // runs its callback at once, not when the GPU reaches it. So the macro read the reports
+    // before the pending ZPass counts landed (OoT white flashes). An operation queued now runs
+    // on the fencing thread after the fences in front of it, and after their query results.
+    // The wait is bounded: past it the read goes on with what the reports hold, as before.
+    struct State {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool written{};
+    };
+    const auto state = std::make_shared<State>();
+    fence_manager.SyncOperation([state] {
+        std::scoped_lock lock{state->mutex};
+        state->written = true;
+        state->cv.notify_all();
+    });
+    fence_manager.SignalFence([] {});
+    std::unique_lock lock{state->mutex};
+    if (!state->cv.wait_for(lock, std::chrono::milliseconds{200},
+                            [&state] { return state->written; })) {
+        static std::atomic<u32> timeouts{};
+        if (timeouts.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOG_WARNING(Render_Vulkan, "Query results for a macro DMA read did not land in 200 ms");
+        }
+    }
+}
+
 
 void RasterizerVulkan::FlushAndInvalidateRegion(DAddr addr, u64 size,
                                                 VideoCommon::CacheType which) {

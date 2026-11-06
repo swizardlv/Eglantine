@@ -15,6 +15,7 @@
 #include <mutex>
 #include <numeric>
 #include <span>
+#include <unordered_set>
 #include <vector>
 
 #include "common/container/unordered_map.h"
@@ -351,6 +352,8 @@ public:
     Common::SpinRecursiveMutex mutex;
     Runtime& runtime;
     bool any_buffer_uploaded = false;
+    /// Indirectly read banks of native programs already uploaded this frame (Lichii #150).
+    std::unordered_set<DAddr> native_indirect_uniforms_this_frame;
 
 private:
     template <typename Func>
@@ -549,6 +552,33 @@ private:
     /// flush and rely on these downloads, e.g. collision meshes skinned by compute shaders.
     bool DownloadsAtFence(DAddr device_addr, u64 size) noexcept {
         return AsyncBufferDownloads() || memory_tracker.IsRegionPreflushable(device_addr, size);
+    }
+
+    /// Queues a GPU write for download at the next fence when DownloadsAtFence holds. With only
+    /// Preflushable marks, just the marked pages are queued: a write that covers one marked page
+    /// of a large buffer would otherwise copy the whole buffer back at every fence. The other
+    /// pages stay GPU modified and are flushed on demand, like any write that is not
+    /// Preflushable. EDEN_NX2_EXACT_PREFLUSH=0 queues the whole write again (Lichii #104).
+    void QueueFenceDownload(DAddr device_addr, u64 size) {
+        static const bool exact = [] {
+            const char* value = std::getenv("EDEN_NX2_EXACT_PREFLUSH");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (!DownloadsAtFence(device_addr, size)) {
+            return;
+        }
+        if (!exact || AsyncBufferDownloads()) {
+            uncommitted_gpu_modified_ranges.Add(device_addr, size);
+            return;
+        }
+        const DAddr end = device_addr + size;
+        memory_tracker.ForEachPreflushableRange(device_addr, size, [&](DAddr begin, u64 length) {
+            const DAddr lower = (std::max)(begin, device_addr);
+            const DAddr upper = (std::min)(begin + length, end);
+            if (lower < upper) {
+                uncommitted_gpu_modified_ranges.Add(lower, upper - lower);
+            }
+        });
     }
 
     /// GPU writes that are not downloaded at fences: trap the guest CPU's next read of their

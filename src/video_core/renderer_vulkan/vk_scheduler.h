@@ -81,6 +81,16 @@ public:
     /// Update the pipeline to the current execution context.
     bool UpdateGraphicsPipeline(GraphicsPipeline* pipeline);
 
+    /// Worker thread only: whether the bound graphics pipeline failed to build, so the draws
+    /// recorded after it must be dropped instead of reaching the driver without a pipeline
+    /// (Lichii #142).
+    void SetGraphicsPipelineMissing(bool missing) {
+        graphics_pipeline_missing = missing;
+    }
+    [[nodiscard]] bool GraphicsPipelineMissing() const {
+        return graphics_pipeline_missing;
+    }
+
     /// Update the rescaling state. Returns true if the state has to be updated.
     bool UpdateRescaling(bool is_rescaling);
 
@@ -344,6 +354,7 @@ private:
     std::mutex queue_mutex;
     std::condition_variable_any event_cv;
     bool worker_waiting{}; ///< The worker is waiting for work (guarded by queue_mutex)
+    bool graphics_pipeline_missing{}; ///< Worker thread only, see SetGraphicsPipelineMissing
     std::jthread worker_thread;
 
     std::chrono::steady_clock::duration frame_interval{};
