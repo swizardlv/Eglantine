@@ -214,15 +214,20 @@ void TextureCache<P>::RunGarbageCollector() {
     // frames (default 120) have every image evicted, a few blocks every 30 frames, and go back to
     // the driver whole. EDEN_NX2_TC_COLD_BLOCKS=<n> (default 4, 0: off) blocks a pass.
     if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
-        // Default 0 (defragmentation by eviction): 120 never fired in practice -- in an
-        // active game no block is ever fully unused for 120 frames (cold=0 in every
-        // MKW_COLD_BLOCKS line of the OOM crash log), so the reclaim was a no-op and device
-        // memory sat at the 6144 MiB budget until a staging allocation failed. With 0, the
-        // emptiest sparse blocks go whole when memory is critical; their images are remade
-        // from guest memory on next draw. Override with EDEN_NX2_TC_COLD_FRAMES=<n>.
+        // Default 5: 120 never fired in practice -- in an active game no block is ever
+        // fully unused for 120 frames (cold=0 in every MKW_COLD_BLOCKS line of the OOM crash
+        // log), so the reclaim was a no-op and device memory sat at the 6144 MiB budget until
+        // a staging allocation failed. But 0 is unsafe: with cold_frames=0 the age check
+        // (youngest + cold_frames <= frame_tick) is vacuous, so a block is evicted even when
+        // its images were used in the current frame (youngest_block_age=0) -- that stalled
+        // Ocarina's intro video, whose decoder pool holds a single image: once the video
+        // frame's block was evicted at frame 810, DecodeLoop never produced frame 2. With
+        // 5, an image used within the last 5 frames keeps its block out, while blocks idle
+        // for real (previous scenes, hundreds of frames) are still reclaimed, so the OOM fix
+        // keeps working. Override with EDEN_NX2_TC_COLD_FRAMES=<n> (0 still opts back in).
         static const u64 cold_frames = [] {
             const char* value = std::getenv("EDEN_NX2_TC_COLD_FRAMES");
-            return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+            return value != nullptr ? std::strtoull(value, nullptr, 10) : 5ULL;
         }();
         static const size_t cold_blocks = [] {
             const char* value = std::getenv("EDEN_NX2_TC_COLD_BLOCKS");
@@ -230,7 +235,8 @@ void TextureCache<P>::RunGarbageCollector() {
         }();
         // EDEN_NX2_TC_COLD_FILL=<percent> (default 60): only blocks less full than this. With
         // EDEN_NX2_TC_COLD_FRAMES=0 a block goes even with images in use: they are made again from the
-        // guest's memory when next drawn, in fuller blocks (a defragmentation by eviction).
+        // guest's memory when next drawn, in fuller blocks (a defragmentation by eviction). That 0
+        // mode is now opt-in only: it evicted the intro video's frame and stalled the decoder.
         static const u64 cold_fill = [] {
             const char* value = std::getenv("EDEN_NX2_TC_COLD_FILL");
             return value != nullptr ? std::strtoull(value, nullptr, 10) : 60ULL;
