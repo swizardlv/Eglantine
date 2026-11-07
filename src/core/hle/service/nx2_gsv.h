@@ -358,6 +358,11 @@ private:
     void GetIdEvent(HLERequestContext& ctx) {
         const u32 id = ctx.CommandBuffer()[2];
         LOG_WARNING(Service, "(STUBBED) nx2:gpu TIPC 12 id={}", id);
+        // PS5: signal the event immediately. The real GPU signals it when the
+        // operation completes, but Eden never calls Start (TIPC 21) for these
+        // ids, so the guest waits forever and the game freezes on level
+        // reload ("start over"). Signalling here lets the guest proceed.
+        EventFor(id)->Signal(system.Kernel());
         IPC::ResponseBuilder rb{ctx, 2, 1, 0};
         rb.Push(ResultSuccess);
         rb.PushCopyObjects(ctx, EventFor(id)->GetReadableEvent());
