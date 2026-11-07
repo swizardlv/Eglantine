@@ -371,7 +371,12 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       descriptor_buffer_ring{descriptor_buffer_ring_},
       render_pass_cache{render_pass_cache_}, buffer_cache{buffer_cache_},
       texture_cache{texture_cache_}, shader_notify{shader_notify_},
-      use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
+      // PS5: force synchronous shader compilation. With async on, the first draw
+      // using a new shader is skipped (BuiltPipeline returns null until the
+      // pipeline finishes building) - Donkey Kong Bananza lost 35 draws incl.
+      // lighting passes and the whole scene went dark. Build synchronously so
+      // every draw renders (build 8 proved this removes the skips).
+      use_asynchronous_shaders{false},
       use_vulkan_pipeline_cache{Settings::values.use_vulkan_driver_pipeline_cache.GetValue()},
       // TEST: default-on for OOT (upstream is opt-in via env var, which PS5
       // cannot set easily). Revert to opt-in once the fog/exposure

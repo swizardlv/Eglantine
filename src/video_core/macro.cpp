@@ -1454,11 +1454,19 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                         static std::unordered_set<u64> dumped{};
                         const u64 key = (u64{method} << 32) | (source & 0xffffffffULL);
                         if (++repeats[key] == 100 && dumped.insert(key).second) {
-                            std::ofstream dump("native-mme-loop-" + std::to_string(method) + ".bin",
-                                               std::ios::binary);
-                            dump.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
-                            LOG_ERROR(HW_GPU, "Native MME polling loop: dumped macro code for method={:#x} source={:#x} to native-mme-loop-{}.bin",
-                                      method, source, method);
+                            // PS5: CWD is not writable (build 12's dump never landed),
+                            // so write to the log dir (fetchable via FTP) and report failure.
+                            const auto path = "/data/eglantineps5/user/log/native-mme-loop-" +
+                                              std::to_string(method) + ".bin";
+                            std::ofstream dump(path, std::ios::binary);
+                            if (!dump) {
+                                LOG_ERROR(HW_GPU, "Native MME polling loop: FAILED to open {} for method={:#x} source={:#x}",
+                                          path, method, source);
+                            } else {
+                                dump.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
+                                LOG_ERROR(HW_GPU, "Native MME polling loop: dumped macro code for method={:#x} source={:#x} to {}",
+                                          method, source, path);
+                            }
                         }
                     }
                     static u32 dma_logs{};
