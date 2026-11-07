@@ -1471,10 +1471,12 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
 #ifdef ARCHITECTURE_x86_64
         // Macro code runs compiled to x86-64 (macro_turing_jit.h) instead of through the memo
         // and the interpreter; EDEN_NX2_MME_JIT=0 goes back to those.
-        static const bool use_jit = [] {
-            const char* value = std::getenv("EDEN_NX2_MME_JIT");
-            return value == nullptr || value[0] != '0';
-        }();
+        // PS5: force the macro interpreter. The Turing JIT can miscompile a
+        // polling loop (DMA read at method 0x143) so the macro never exits and
+        // the game freezes on startup (Donkey Kong Bananza: present #4, log
+        // stops at 24.5 s, same DMA read 400 times). The interpreter is the
+        // reference implementation; use it until the JIT loop is diagnosed.
+        static const bool use_jit = false;
         if (use_jit) {
             if (!native_jit) {
                 native_jit = std::make_shared<TuringMacroJit>();
