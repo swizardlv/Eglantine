@@ -24,17 +24,17 @@ namespace Vulkan {
 namespace {
 // OoT (Nintendo 64 - Nintendo Classics) bakes a horizontal blue-channel gain into its
 // 2560x1440 composite image; see vulkan_present_stripe_comp.frag. Only compensate for
-// that title. EDEN_NX2_STRIPE_COMP=0 disables it (e.g. to capture the raw layer with
-// EDEN_NX2_FRAME_CAPTURE=1, or if the intro video matters more than the gameplay
-// stripes: the video shares this present path and is clean, so it gains the inverse
-// ripple while the compensation is on). The env var is read once; the program id is
+// that title. Off by default: the intro video shares this present path and is clean,
+// so the compensation gives it the inverse ripple (a net-negative fix). Opt in with
+// EDEN_NX2_STRIPE_COMP=1 (e.g. to capture the compensated layer, or if the gameplay
+// stripes matter more than the intro). The env var is read once; the program id is
 // checked on every call so a pass built before the program loads still picks it up.
 bool StripeCompensationEnabled() {
-    static const bool disabled = [] {
+    static const bool enabled = [] {
         const char* const value = std::getenv("EDEN_NX2_STRIPE_COMP");
-        return value != nullptr && std::strcmp(value, "0") == 0;
+        return value != nullptr && std::strcmp(value, "1") == 0;
     }();
-    return !disabled && Settings::GetCurrentProgramID() == 0x0400486024DEC000ULL;
+    return enabled && Settings::GetCurrentProgramID() == 0x0400486024DEC000ULL;
 }
 } // Anonymous namespace
 

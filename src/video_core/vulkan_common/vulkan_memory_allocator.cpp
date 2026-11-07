@@ -539,10 +539,14 @@ void LogMemoryStatistics(const Device& device) {
     }
     std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
     vmaGetHeapBudgets(allocator, budgets.data());
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT driver_budget{};
+    driver_budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    device.GetPhysical().GetMemoryProperties(&driver_budget);
     for (u32 heap = 0; heap < properties->memoryHeapCount; ++heap) {
-        LOG_INFO(Render_Vulkan, "VMA heap {}: usage {} MiB of budget {} MiB, VMA blocks {} MiB",
+        LOG_INFO(Render_Vulkan,
+                 "VMA heap {}: usage {} MiB of budget {} MiB, VMA blocks {} MiB, driver heapUsage {} MiB",
                  heap, budgets[heap].usage >> 20, budgets[heap].budget >> 20,
-                 budgets[heap].statistics.blockBytes >> 20);
+                 budgets[heap].statistics.blockBytes >> 20, driver_budget.heapUsage[heap] >> 20);
     }
 }
 
