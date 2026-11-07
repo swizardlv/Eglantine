@@ -558,8 +558,19 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         buffer.address_high.Assign(high & 0xff);
         buffer.size.Assign(((high >> 19) & 0x1fff) << 4);
     }
-    if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
+    if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z) {
+        // PS5: log silently-skipped dispatches. A culling/indirect-draw compute
+        // that is skipped here never writes the draw arguments the GPU macro
+        // polls for, so the macro loops forever (Donkey Kong Bananza freeze).
+        static u32 skipped{};
+        if (++skipped <= 8) {
+            LOG_ERROR(HW_GPU,
+                      "Native compute dispatch skipped (zero block dim): grid {}x{}x{}, block {}x{}x{}, code {:#x}",
+                      qmd[12], qmd[13] & 0xffff, qmd[14] & 0xffff, qmd[18] >> 16, qmd[19] & 0xffff,
+                      qmd[19] >> 16, (GPUVAddr{qmd[49] & 0x1ffff} << 32) | qmd[48]);
+        }
         return false;
+    }
     try {
         rasterizer->DispatchCompute();
     } catch (const Shader::Exception& error) {
