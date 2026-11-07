@@ -64,6 +64,16 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                              (op == 0x83b && instruction.Bits(91, 1));
 
     }
+    // Native accesses to reserved high GPRs, and the uniform registers this program
+    // actually references, are recorded while lowering and reconciled in finish():
+    // the old inline check rejected any high GPR in a program that mentions the
+    // uniform bank, but a native GPR only aliases lowering state when its uniform
+    // slot is really used (UR0-UR27; R238 maps to no uniform register, R239 holds the
+    // uniform predicates, R246-R254 are lowering scratch). This is a pure relaxation:
+    // every program the old check accepted is still accepted.
+    u32 referenced_uniforms = 0; // bit n: URn read or written somewhere in the program
+    std::array<u32, 39> first_high_access{}; // first instruction index touching R216-R254
+    first_high_access.fill(~0U);
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
     const auto fail = [&](u32 index, std::string_view reason) {
         result.instructions.clear();
@@ -73,6 +83,27 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         return result;
     };
     const auto finish = [&](u32 index) {
+        // Reject the first recorded high-GPR access that really conflicts with the
+        // uniform registers this program uses (or lowering scratch, R246-R254),
+        // with the same message as the old inline check. finish() only runs once
+        // the whole program (including called subroutines) is lowered, so the
+        // recorded uniform set is complete here.
+        u32 conflict_index = ~0U;
+        for (u32 reg = 216; reg < 255; ++reg) {
+            const u32 first = first_high_access[reg - 216];
+            if (first == ~0U) continue;
+            bool conflicts = reg >= 246;
+            if (!conflicts && uses_uniform_bank) {
+                if (reg == 239) conflicts = true;
+                else if (reg != 238) {
+                    const u32 ur = reg < 238 ? reg - 216 : reg - 218;
+                    conflicts = (referenced_uniforms & (1U << ur)) != 0;
+                }
+            }
+            if (conflicts) conflict_index = std::min(conflict_index, first);
+        }
+        if (conflict_index != ~0U)
+            return fail(conflict_index, "native program uses lowering scratch registers");
         for (const auto& relocation : relocations) {
             if (relocation.target > index) return fail(index, "native branch or call leaves captured program");
             const u32 target = result.source_instruction_offsets[static_cast<size_t>(relocation.target)];
@@ -104,11 +135,34 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                 return fail(index, "native callee overwrites link register");
         }
         // Scratch values and emulated uniform state occupy reserved high GPRs.
-        // Reject native accesses that could alias that state.
+        // Record native accesses; finish() rejects the first one that really aliases
+        // a uniform register this program uses (or lowering scratch, R246-R254).
+        // Global loads/stores span registers by size (64-bit: 2, 128-bit: 4) and
+        // register-pair addresses span 2, so record the whole span, not just the base.
         for (u32 bit : {16U, 24U, 32U, 64U}) {
             if (bit == 32 && insn.Bits(9, 3) != 1 && opcode != 0xb60 && opcode != 0xb66 && opcode != 0x986 && opcode != 0x987 && opcode != 0xf66 && opcode != 0x988 && opcode != 0x927) continue;
             const u32 reg = insn.Bits(bit, 8);
-            if (reg >= (uses_uniform_bank ? 216U : 246U) && reg < 255) return fail(index, "native program uses lowering scratch registers");
+            u32 count = 1;
+            if (opcode == 0x381 || opcode == 0x981) {
+                if (bit == 16) {
+                    const u32 size = insn.Bits(73, 3);
+                    count = size == 6 ? 4 : size == 5 ? 2 : 1;
+                } else if (bit == 24) {
+                    count = insn.Bits(90, 1) ? 2 : 1;
+                }
+            } else if (opcode == 0x386 || opcode == 0x986) {
+                if (bit == 32) {
+                    const u32 size = insn.Bits(73, 3);
+                    count = size == 6 ? 4 : size == 5 ? 2 : 1;
+                } else if (bit == 24) {
+                    count = insn.Bits(90, 1) ? 2 : 1;
+                }
+            }
+            for (u32 i = 0; i < count; ++i) {
+                const u32 spanned = reg + i;
+                if (spanned >= 216U && spanned < 255U && first_high_access[spanned - 216U] == ~0U)
+                    first_high_access[spanned - 216U] = index;
+            }
         }
         // TLD/TLD4 .F16 (bit 79): the components come packed in pairs, (0, 1) in Rd and (2, 3) in
         // the second destination. Lowered as the F32 form into R248/R249 and R246/R247, then packed.
@@ -127,6 +181,7 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         // predicates), so even/odd pairs stay adjacent. Sites that still check reg < 16 rely on
         // UR0-UR15 being R216-R231.
         const auto uniform_register = [&](u32 reg) -> u32 {
+            if (reg < 28) referenced_uniforms |= 1U << reg;
             if (reg < 22) return 216 + reg;
             if (reg < 28) return 218 + reg;
             if (reg == 63) return 255;
@@ -792,14 +847,14 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         }
         case 0x882: { // UMOV immediate.
             if (dest >= 16 || insn.words[2]) return fail(index, "native uniform immediate move mode");
-            mov_imm(static_cast<u32>(dest) + 216, insn.words[1]);
+            mov_imm(uniform_register(static_cast<u32>(dest)), insn.words[1]);
             break;
         }
         case 0xc82: { // UMOV UR, UR (or URZ), including uniform execution predicates.
             const u32 source = insn.words[1] < 64 ? uniform_register(insn.words[1]) : ~0U;
             if (dest >= 16 || source == ~0U || insn.words[2] != 0x08000000)
                 return fail(index, "native uniform move mode");
-            emit(0x5c98000000000000ULL | predicate | (dest + 216) |
+            emit(0x5c98000000000000ULL | predicate | uniform_register(static_cast<u32>(dest)) |
                  (u64{source} << 20) | (u64{15} << 39));
             break;
         }
@@ -2051,8 +2106,12 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                 result.instructions.push_back(base(0x0100000000000000ULL) | (u64{15} << 12) |
                     (u64{insn.words[1]} << 20));
             } else if (opcode == 0xc02) {
-                if (insn.words[1] >= 16 || insn.words[2] != 0x08000f00) return fail(index, "native uniform move source");
-                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.words[1] + 216} << 20));
+                // UR16-UR27 live in R232-R245 (UR22-UR27 via 218+n, not n+216): use the
+                // same mapping as every other uniform access instead of capping at UR15.
+                const u32 source = uniform_register(insn.words[1]);
+                if (source == ~0U || source == 255 || insn.words[2] != 0x08000f00)
+                    return fail(index, "native uniform move source");
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{source} << 20));
             } else if (opcode == 0x202) {
                 if (insn.Bits(40, 24)) return fail(index, "native MOV register modifiers");
                 result.instructions.push_back(base(0x5c98000000000000ULL) | (u64{15} << 39) |
