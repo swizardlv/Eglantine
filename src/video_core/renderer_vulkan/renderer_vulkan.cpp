@@ -215,6 +215,24 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     RenderScreenshot(framebuffers);
     Frame* frame = present_manager.GetRenderFrame();
 
+    // The surface's currentExtent (the display mode's visible region, e.g. 3840x2160 on a 4K
+    // TV) wins over the requested size in ChooseSwapExtent, so the swapchain is larger than
+    // the frame the output-resolution setting asked for (1920x1080). The present blit then
+    // has to upscale 1920x1080 -> 3840x2160 with VK_FILTER_LINEAR, and that hardware upscale
+    // damages the B channel (fine vertical stripes + yellow tint). Draw the frame at the
+    // swapchain's actual extent instead, so the present blit becomes 1:1 and the shader blit
+    // does the scaling. DrawToFrame already recreates the frame when the layout changes, and
+    // the HUD scales with render_area.height/1080, so nothing else needs to change. The
+    // extent is taken from the swapchain itself, never hardcoded.
+    const VkExtent2D swapchain_extent = swapchain.GetExtent();
+    const u32 layout_width = render_window.GetFramebufferLayout().width;
+    const u32 layout_height = render_window.GetFramebufferLayout().height;
+    if (swapchain_extent.width > 0 && swapchain_extent.height > 0 &&
+        (swapchain_extent.width != layout_width || swapchain_extent.height != layout_height)) {
+        render_window.UpdateCurrentFramebufferLayout(swapchain_extent.width,
+                                                     swapchain_extent.height);
+    }
+
     scheduler.RequestOutsideRenderPassOperationContext();
     blit_swapchain.DrawToFrame(device, rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(),
