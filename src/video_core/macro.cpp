@@ -1444,6 +1444,23 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
                             LOG_INFO(HW_GPU, "Native MME DMA read flushed GPU-written memory ({} times)", flushes);
                         }
                     }
+                    // PS5: a macro stuck in a polling loop repeats the same DMA read
+                    // forever (Donkey Kong Bananza freeze). When one (method, source)
+                    // repeats 100 times, dump the whole native macro program so the
+                    // polling loop can be disassembled offline and the awaited value
+                    // identified (the 400-entry log cap alone does not show the code).
+                    {
+                        static std::unordered_map<u64, u32> repeats{};
+                        static std::unordered_set<u64> dumped{};
+                        const u64 key = (u64{method} << 32) | (source & 0xffffffffULL);
+                        if (++repeats[key] == 100 && dumped.insert(key).second) {
+                            std::ofstream dump("native-mme-loop-" + std::to_string(method) + ".bin",
+                                               std::ios::binary);
+                            dump.write(reinterpret_cast<const char*>(native_code.data()), sizeof(native_code));
+                            LOG_ERROR(HW_GPU, "Native MME polling loop: dumped macro code for method={:#x} source={:#x} to native-mme-loop-{}.bin",
+                                      method, source, method);
+                        }
+                    }
                     static u32 dma_logs{};
                     if (dma_logs < 400) {
                         ++dma_logs;
