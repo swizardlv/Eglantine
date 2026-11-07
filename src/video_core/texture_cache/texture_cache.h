@@ -241,12 +241,28 @@ void TextureCache<P>::RunGarbageCollector() {
             const char* value = std::getenv("EDEN_NX2_TC_COLD_FILL");
             return value != nullptr ? std::strtoull(value, nullptr, 10) : 60ULL;
         }();
+        // EDEN_NX2_TC_COLD_FRAC=<percent> (default 50): v3 -- a block counts as "mostly
+        // cold" when at least this share of its used bytes belongs to images older than
+        // cold_frames. The old test (every image in the block older than cold_frames)
+        // never fired in an active game: every block holds at least one image touched
+        // this frame (youngest_block_age=0 in every MKW_COLD_BLOCKS line of the OOM crash
+        // logs), so cold was always 0 and no block was ever given back whole -- while the
+        // per-image collector freed images without returning their blocks to the driver
+        // (see AllocatedUsage: a freed image only gives its share back once its whole
+        // block is empty), so driver heapUsage only grew until a staging allocation
+        // failed. A mostly-cold block is evicted whole (its hot images are remade from
+        // guest memory on next draw); a block holding an image used this very frame is
+        // never touched, which keeps the intro video frame (sampled every frame) safe.
+        static const u64 cold_frac = [] {
+            const char* value = std::getenv("EDEN_NX2_TC_COLD_FRAC");
+            return value != nullptr ? std::strtoull(value, nullptr, 10) : 50ULL;
+        }();
         static u64 cold_pass_frame = 0;
         if (cold_blocks != 0 && total_used_memory >= critical_memory && frame_tick >= cold_pass_frame + 30) {
             cold_pass_frame = frame_tick;
             struct BlockUse {
-                u64 used = 0, size = 0, youngest = 0;
-                bool pinned = false;
+                u64 used = 0, size = 0, youngest = 0, cold_bytes = 0;
+                bool pinned = false, has_fresh = false;
                 std::vector<ImageId> images;
             };
             std::unordered_map<u64, BlockUse> blocks;
@@ -266,37 +282,62 @@ void TextureCache<P>::RunGarbageCollector() {
                 if (False(image->flags & ImageFlagBits::Registered) || True(image->flags & ImageFlagBits::IsDecoding)) {
                     use.pinned = true;
                 } else {
-                    use.youngest = (std::max)(use.youngest, lru_cache.Tick(image->lru_index));
+                    const u64 tick = lru_cache.Tick(image->lru_index);
+                    use.youngest = (std::max)(use.youngest, tick);
+                    if (tick + cold_frames <= frame_tick) {
+                        use.cold_bytes += block.size;
+                    }
+                    if (tick == frame_tick) {
+                        use.has_fresh = true;
+                    }
                 }
             }
-            std::vector<std::pair<u64, u64>> candidates; // (used, block)
+            struct ColdCandidate {
+                u64 permille;
+                u64 used;
+                u64 block;
+            };
+            std::vector<ColdCandidate> candidates;
             {   // TEMPORARY: why blocks are or are not given back
-                size_t pinned = 0, cold = 0, sparse = 0, both = 0, images_in_blocks = 0;
+                size_t pinned = 0, cold = 0, sparse = 0, both = 0, mcold = 0, fresh = 0, images_in_blocks = 0;
                 u64 used_total = 0, size_total = 0, age_min = ~0ULL;
                 for (const auto& [block, use] : blocks) {
                     pinned += use.pinned;
                     const bool is_cold = !use.pinned && use.youngest + cold_frames <= frame_tick;
                     const bool is_sparse = use.used * 10 < use.size * 6;
+                    const bool is_mcold = !use.pinned && !use.has_fresh && is_sparse && use.used != 0 &&
+                                          use.cold_bytes * 100 >= use.used * cold_frac;
                     cold += is_cold;
                     sparse += is_sparse;
                     both += is_cold && is_sparse;
+                    mcold += is_mcold;
+                    fresh += use.has_fresh;
                     images_in_blocks += use.images.size();
                     used_total += use.used;
                     size_total += use.size;
                     if (!use.pinned) age_min = (std::min)(age_min, frame_tick - use.youngest);
                 }
-                LOG_WARNING(HW_GPU, "MKW_COLD_BLOCKS frame={} blocks={} images={} used={}MiB of {}MiB pinned={} cold={} under60={} both={} youngest_block_age={}",
+                LOG_WARNING(HW_GPU, "MKW_COLD_BLOCKS frame={} blocks={} images={} used={}MiB of {}MiB pinned={} cold={} under60={} both={} youngest_block_age={} mcold={} fresh={}",
                             frame_tick, blocks.size(), images_in_blocks, used_total >> 20, size_total >> 20, pinned, cold,
-                            sparse, both, age_min);
+                            sparse, both, age_min, mcold, fresh);
             }
             for (const auto& [block, use] : blocks) {
-                if (!use.pinned && use.youngest + cold_frames <= frame_tick && use.used * 100 < use.size * cold_fill) {
-                    candidates.emplace_back(use.used, block);
-                }
+                if (use.pinned || use.has_fresh || use.used == 0) continue;
+                if (use.used * 100 >= use.size * cold_fill) continue;
+                if (use.cold_bytes * 100 < use.used * cold_frac) continue;
+                const u64 permille = use.cold_bytes * 1000 / use.used;
+                candidates.push_back(ColdCandidate{permille, use.used, block});
             }
-            std::sort(candidates.begin(), candidates.end());
+            // Coldest first (highest cold fraction), then emptiest.
+            std::sort(candidates.begin(), candidates.end(), [](const ColdCandidate& a, const ColdCandidate& b) {
+                if (a.permille != b.permille) return a.permille > b.permille;
+                return a.used < b.used;
+            });
             if (candidates.size() > cold_blocks) candidates.resize(cold_blocks);
-            for (const auto& [used, block] : candidates) {
+            for (const auto& candidate : candidates) {
+                // Stop once we are out of the critical zone: evicting more only thrashes.
+                if (total_used_memory < critical_memory) break;
+                const u64 block = candidate.block;
                 for (const ImageId image_id : blocks[block].images) {
                     auto& image = slot_images[image_id];
                     if (IsDownloadable(image) && False(image.flags & ImageFlagBits::BadOverlap)) {
