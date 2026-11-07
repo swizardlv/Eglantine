@@ -214,9 +214,15 @@ void TextureCache<P>::RunGarbageCollector() {
     // frames (default 120) have every image evicted, a few blocks every 30 frames, and go back to
     // the driver whole. EDEN_NX2_TC_COLD_BLOCKS=<n> (default 4, 0: off) blocks a pass.
     if constexpr (requires(const Image& image) { image.MemoryBlock(); }) {
+        // Default 0 (defragmentation by eviction): 120 never fired in practice -- in an
+        // active game no block is ever fully unused for 120 frames (cold=0 in every
+        // MKW_COLD_BLOCKS line of the OOM crash log), so the reclaim was a no-op and device
+        // memory sat at the 6144 MiB budget until a staging allocation failed. With 0, the
+        // emptiest sparse blocks go whole when memory is critical; their images are remade
+        // from guest memory on next draw. Override with EDEN_NX2_TC_COLD_FRAMES=<n>.
         static const u64 cold_frames = [] {
             const char* value = std::getenv("EDEN_NX2_TC_COLD_FRAMES");
-            return value != nullptr ? std::strtoull(value, nullptr, 10) : 120ULL;
+            return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
         }();
         static const size_t cold_blocks = [] {
             const char* value = std::getenv("EDEN_NX2_TC_COLD_BLOCKS");
@@ -245,10 +251,13 @@ void TextureCache<P>::RunGarbageCollector() {
                 use.used += block.size;
                 use.size = block.block_size;
                 use.images.push_back(image_id);
-                // A block with an image the GPU wrote (it would have to be read back first), one being
-                // decoded or one not registered stays.
-                if (False(image->flags & ImageFlagBits::Registered) || True(image->flags & ImageFlagBits::IsDecoding) ||
-                    (IsDownloadable(*image) && False(image->flags & ImageFlagBits::BadOverlap))) {
+                // A block with an image being decoded or one not registered stays. A block
+                // is NOT pinned merely for holding a downloadable image: the eviction below
+                // downloads it first (DownloadMemory + SwizzleImage), same as the LRU path,
+                // so its data is preserved. Pinning on downloadable made the reclaim a no-op
+                // -- 18 of 23 blocks were pinned in the OOM crash log -- because most blocks
+                // hold at least one downloadable image.
+                if (False(image->flags & ImageFlagBits::Registered) || True(image->flags & ImageFlagBits::IsDecoding)) {
                     use.pinned = true;
                 } else {
                     use.youngest = (std::max)(use.youngest, lru_cache.Tick(image->lru_index));
