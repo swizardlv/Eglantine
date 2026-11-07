@@ -942,7 +942,7 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                 (u64{1} << 29) | (u64{insn.Bits(40, 13)} << 34) | (u64{insn.Bits(81, 3)} << 48));
             break;
         }
-        case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32 (op in bits 87-89), register address.
+        case 0x98e: { // RED.E.{ADD..XOR}.STRONG.GPU U32/S32/F32 (op in bits 87-89), register address.
             const u32 type = insn.Bits(73, 3);
             const u32 operation = insn.Bits(87, 3);
             const bool uniform_address = insn.Bits(24, 8) == 255;
@@ -950,7 +950,7 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
             const u32 mode = uniform_address ? 0x0c10e100U : 0x0010e100U;
             const s32 offset = static_cast<s32>(insn.Bits(40, 24) << 8) >> 8;
             if ((insn.words[2] & ~variable) != mode ||
-                (type != 0 && type != 3) || (type == 3 && operation != 0))
+                (type != 0 && type != 1 && type != 3) || (type == 3 && operation != 0))
                 return fail(index, "native global reduction mode");
             const u32 address = uniform_address ? uniform_register(insn.Bits(64, 6))
                                                 : insn.Bits(24, 8);
@@ -1056,7 +1056,10 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
         }
         case 0xf8c: { // ATOMS.POPC.INC.32 with no returned value: one increment per active lane.
             const u32 stride = insn.Bits(78, 2);
-            if (dest != 255 || insn.words[1] || (insn.words[2] & ~0xc000U) != 0x0d00003f)
+            // The shared byte offset (bits 40-63) is honoured like ATOMS.ADD, word-aligned.
+            const u32 offset = insn.Bits(40, 24);
+            if (dest != 255 || (insn.words[1] & 0xff) || (offset & 3) ||
+                (insn.words[2] & ~0xc000U) != 0x0d00003f)
                 return fail(index, "native shared increment mode");
             u32 address = insn.Bits(24, 8);
             if (stride && address != 255) {
@@ -1065,7 +1068,8 @@ uses_uniform_bank |= op == 0xf66 || op == 0xf6c;
                 address = 251;
             }
             mov_imm(250, 1);
-            emit(0xec00000000000000ULL | predicate | 255 | (u64{address} << 8) | (u64{250} << 20));
+            emit(0xec00000000000000ULL | predicate | 255 | (u64{address} << 8) | (u64{250} << 20) |
+                 (u64{offset >> 2} << 30));
             break;
         }
         case 0x38c: { // ATOMS.ADD.U32, naturally aligned shared byte offset.

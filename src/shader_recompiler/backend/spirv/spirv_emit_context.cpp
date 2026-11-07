@@ -1026,11 +1026,12 @@ void EmitContext::DefineGlobalMemoryFunctions(const IR::Program& program) {
     std::tie(load_global_func_u32x4, write_global_func_u32x4) =
         define(&StorageDefinitions::U32x4, storage_types.U32x4, U32[4], sizeof(u32[4]));
 
-    if (!std::ranges::any_of(info.storage_buffers_descriptors, [&](const auto& descriptor) {
-            return info.native_global_bounds || UsesNvnStorageDescriptor(info, descriptor);
-        })) {
-        return;
-    }
+    // The atomic functions are defined whenever the program uses them, like the global
+    // load/store functions above: define_body routes the address through the NVN storage
+    // buffers, and an address covered by none of them falls through to a zero return (a
+    // no-op atomic). Gating this on a routable buffer existing made the whole pipeline
+    // fail ("Global atomic add with no routable storage buffer") for shaders whose buffers
+    // failed to track, which froze the game waiting for a dispatch that could never run.
     for (const auto opcode : {IR::Opcode::GlobalAtomicIAdd32, IR::Opcode::GlobalAtomicUMax32}) {
         if (!std::ranges::any_of(program.blocks, [opcode](const IR::Block* block) {
                 return std::ranges::any_of(block->Instructions(), [opcode](const IR::Inst& inst) {
