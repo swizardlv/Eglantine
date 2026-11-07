@@ -46,6 +46,14 @@ public:
 
     void TickFrame();
 
+    /// Release every cached staging buffer whose GPU work is done, across all
+    /// usages and size classes. Used under memory pressure: the normal
+    /// TickFrame() path only releases 16 entries at one rotating level.
+    void ReleaseAllFree();
+
+    /// Total bytes currently retained by cached staging buffers.
+    [[nodiscard]] size_t RetainedBytes() const;
+
 private:
     struct StreamBufferCommit {
         size_t upper_bound;

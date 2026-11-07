@@ -5,12 +5,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <utility>
 #include <vector>
 
 #include <fmt/ranges.h>
 
 #include "common/alignment.h"
+#include "common/logging.h"
 #include "common/assert.h"
 #include "common/bit_util.h"
 #include "common/common_types.h"
@@ -125,6 +127,62 @@ void StagingBufferPool::TickFrame() {
     ReleaseCache(MemoryUsage::DeviceLocal);
     ReleaseCache(MemoryUsage::Upload);
     ReleaseCache(MemoryUsage::Download);
+
+    // The pool caches every large upload buffer it creates and normally only
+    // releases 16 entries at one rotating level per frame. In a texture
+    // upload burst (tens of thousands of uploads) creation vastly outpaces
+    // release, so the pool retains host-visible memory while the driver heap
+    // climbs to its limit and a fresh staging allocation fails with
+    // VK_ERROR_OUT_OF_DEVICE_MEMORY (the texture cache's own blocks are only
+    // ~600 MiB and its collector cannot reclaim this). Once retained staging
+    // memory passes the budget, drop every buffer whose GPU work is done
+    // instead of waiting for the rotating release.
+    static const size_t staging_budget = [] {
+        const char* value = std::getenv("EDEN_NX2_STAGING_BUDGET_MB");
+        const size_t mb = value != nullptr ? std::strtoull(value, nullptr, 10) : 512;
+        return mb * 1024 * 1024;
+    }();
+    const size_t retained = RetainedBytes();
+    if (retained > staging_budget) {
+        ReleaseAllFree();
+        const size_t freed = retained - RetainedBytes();
+        if (freed > 0) {
+            LOG_INFO(Render_Vulkan,
+                     "Staging pool pressure release: retained {} MiB > budget {} MiB, freed {} MiB",
+                     retained >> 20, staging_budget >> 20, freed >> 20);
+        }
+    }
+}
+
+size_t StagingBufferPool::RetainedBytes() const {
+    size_t total = 0;
+    for (const StagingBuffersCache* cache : {&device_local_cache, &upload_cache, &download_cache}) {
+        for (const StagingBuffers& level : *cache) {
+            for (const StagingBuffer& entry : level.entries) {
+                total += size_t(1) << entry.log2_level;
+            }
+        }
+    }
+    return total;
+}
+
+void StagingBufferPool::ReleaseAllFree() {
+    for (StagingBuffersCache* cache : {&device_local_cache, &upload_cache, &download_cache}) {
+        for (StagingBuffers& level : *cache) {
+            auto& entries = level.entries;
+            entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                          [this](const StagingBuffer& entry) {
+                                              return scheduler.IsFree(entry.tick);
+                                          }),
+                          entries.end());
+            if (level.delete_index > entries.size()) {
+                level.delete_index = 0;
+            }
+            if (level.iterate_index > entries.size()) {
+                level.iterate_index = 0;
+            }
+        }
+    }
 }
 
 StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
