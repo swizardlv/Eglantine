@@ -7,6 +7,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
+#include <cstring>
 #include <vulkan/vulkan_core.h>
 #include "common/settings.h"
 #include "video_core/framebuffer_config.h"
@@ -19,12 +21,30 @@
 
 namespace Vulkan {
 
-BlitScreen::BlitScreen(Tegra::MaxwellDeviceMemoryManager& device_memory_, const Device& device_, MemoryAllocator& memory_allocator_, PresentManager& present_manager_, Scheduler& scheduler_, const PresentFilters& filters_)
+namespace {
+// OoT (Nintendo 64 - Nintendo Classics) bakes a horizontal blue-channel gain into its
+// 2560x1440 composite image; see vulkan_present_stripe_comp.frag. Only compensate for
+// that title. EDEN_NX2_STRIPE_COMP=0 disables it (e.g. to capture the raw layer with
+// EDEN_NX2_FRAME_CAPTURE=1, or if the intro video matters more than the gameplay
+// stripes: the video shares this present path and is clean, so it gains the inverse
+// ripple while the compensation is on). The env var is read once; the program id is
+// checked on every call so a pass built before the program loads still picks it up.
+bool StripeCompensationEnabled() {
+    static const bool disabled = [] {
+        const char* const value = std::getenv("EDEN_NX2_STRIPE_COMP");
+        return value != nullptr && std::strcmp(value, "0") == 0;
+    }();
+    return !disabled && Settings::GetCurrentProgramID() == 0x0400486024DEC000ULL;
+}
+} // Anonymous namespace
+
+BlitScreen::BlitScreen(Tegra::MaxwellDeviceMemoryManager& device_memory_, const Device& device_, MemoryAllocator& memory_allocator_, PresentManager& present_manager_, Scheduler& scheduler_, const PresentFilters& filters_, bool stripe_compensation_)
     : device_memory{device_memory_}
     , memory_allocator{memory_allocator_}
     , present_manager{present_manager_}
     , scheduler{scheduler_}
     , filters{filters_}
+    , stripe_compensation{stripe_compensation_}
     , image_count{1}
     , image_index{0}
     , swapchain_view_format{VK_FORMAT_B8G8R8A8_UNORM}
@@ -82,7 +102,9 @@ void BlitScreen::SetWindowAdaptPass(const Device& device) {
     case Settings::ScalingFilter::SgsrEdge:
     case Settings::ScalingFilter::Bilinear:
     default:
-        window_adapt = MakeBilinear(device, swapchain_view_format);
+        window_adapt = stripe_compensation && StripeCompensationEnabled()
+                           ? MakeBilinearStripeComp(device, swapchain_view_format)
+                           : MakeBilinear(device, swapchain_view_format);
         break;
     }
 }

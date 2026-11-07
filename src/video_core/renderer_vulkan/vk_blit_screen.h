@@ -50,9 +50,13 @@ struct FramebufferTextureInfo {
 
 class BlitScreen {
 public:
+    // stripe_compensation: only the display blit (blit_swapchain) gets the OoT
+    // blue-stripe compensation; the capture/applet blits keep showing the raw
+    // layer so EDEN_NX2_FRAME_CAPTURE still records what the guest produced.
     explicit BlitScreen(Tegra::MaxwellDeviceMemoryManager& device_memory, const Device& device,
                         MemoryAllocator& memory_allocator, PresentManager& present_manager,
-                        Scheduler& scheduler, const PresentFilters& filters);
+                        Scheduler& scheduler, const PresentFilters& filters,
+                        bool stripe_compensation = false);
     ~BlitScreen();
 
     void DrawToFrame(const Device& device, RasterizerVulkan& rasterizer, Frame* frame,
@@ -77,6 +81,7 @@ private:
     PresentManager& present_manager;
     Scheduler& scheduler;
     const PresentFilters& filters;
+    bool stripe_compensation{false};
     std::size_t image_count{};
     std::size_t image_index{};
     VkFormat swapchain_view_format{};

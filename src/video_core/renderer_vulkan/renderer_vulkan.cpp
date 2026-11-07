@@ -162,7 +162,8 @@ try
                    memory_allocator,
                    present_manager,
                    scheduler,
-                   PresentFiltersForDisplay)
+                   PresentFiltersForDisplay,
+                   true) // OoT blue-stripe compensation (display blit only; capture stays raw)
     , blit_capture(device_memory,
                    device,
                    memory_allocator,

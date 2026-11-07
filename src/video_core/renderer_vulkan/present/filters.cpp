@@ -21,6 +21,7 @@
 #include "video_core/host_shaders/present_zero_tangent_frag_spv.h"
 #include "video_core/host_shaders/present_mmpx_frag_spv.h"
 #include "video_core/host_shaders/vulkan_present_frag_spv.h"
+#include "video_core/host_shaders/vulkan_present_stripe_comp_frag_spv.h"
 #include "video_core/host_shaders/vulkan_present_scaleforce_fp16_frag_spv.h"
 #include "video_core/host_shaders/vulkan_present_scaleforce_fp32_frag_spv.h"
 #include "video_core/renderer_vulkan/present/filters.h"
@@ -38,6 +39,11 @@ std::unique_ptr<WindowAdaptPass> MakeNearestNeighbor(const Device& device, VkFor
 std::unique_ptr<WindowAdaptPass> MakeBilinear(const Device& device, VkFormat frame_format) {
     return std::make_unique<WindowAdaptPass>(device, frame_format, CreateBilinearSampler(device),
         BuildShader(device, VULKAN_PRESENT_FRAG_SPV));
+}
+
+std::unique_ptr<WindowAdaptPass> MakeBilinearStripeComp(const Device& device, VkFormat frame_format) {
+    return std::make_unique<WindowAdaptPass>(device, frame_format, CreateBilinearSampler(device),
+        BuildShader(device, VULKAN_PRESENT_STRIPE_COMP_FRAG_SPV));
 }
 
 std::unique_ptr<WindowAdaptPass> MakeSpline1(const Device& device, VkFormat frame_format) {
