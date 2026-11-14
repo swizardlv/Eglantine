@@ -36,6 +36,7 @@ add_executable(tests
     video_core/spirv_atomic_retry.cpp
     video_core/spirv_fragment_shuffle.cpp
     video_core/ampere_depth_compare.cpp
+    video_core/nx2_video_decoder.cpp
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
     video_core/ampere_lowering.cpp
@@ -63,7 +64,7 @@ add_executable(tests
 
 create_target_directory_groups(tests)
 
-target_link_libraries(tests PRIVATE common core input_common video_core)
+target_link_libraries(tests PRIVATE common core input_common video_core ${FFmpeg_LIBRARIES})
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
 
 add_test(NAME tests COMMAND tests)

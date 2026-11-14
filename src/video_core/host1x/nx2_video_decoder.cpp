@@ -203,7 +203,8 @@ void Nx2VideoDecoder::Render(const Nx2Picture& picture, Nx2PictureFormat format,
     const u64 needed = format == Nx2PictureFormat::Nv12
                            ? chroma_offset + pitch * ((u64{height} + 1) / 2)
                            : pitch * height;
-    if (width == 0 || height == 0 || out.size() < needed) {
+    const u64 min_pitch = format == Nx2PictureFormat::Nv12 ? width : u64{width} * 4;
+    if (width == 0 || height == 0 || pitch < min_pitch || out.size() < needed) {
         return;
     }
     const AVPixelFormat target = format == Nx2PictureFormat::Nv12    ? AV_PIX_FMT_NV12
